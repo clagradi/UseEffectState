@@ -132,10 +132,10 @@ export function RoomFeed({ roomId }: { roomId: string }) {
 
 	 ```bash
 	 # from repo folder path
-	 npm i /absolute/path/to/UseEffectState
+	 npm i /absolute/path/to/effect-runtime
 
 	 # from generated tarball
-	 npm i /absolute/path/to/UseEffectState/clagradi-effect-runtime-0.1.0.tgz
+	 npm i /absolute/path/to/effect-runtime/clagradi-effect-runtime-0.1.0.tgz
 	 ```
 
 4. Verify in the consumer app:
