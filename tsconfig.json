@@ -11,7 +11,9 @@
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
     "declarationMap": true,
+    "isolatedModules": true,
+    "types": ["node", "vitest/globals"],
     "noEmit": true
   },
-  "include": ["src", "test", "vitest.config.ts"]
+  "include": ["src", "tests", "vitest.config.ts", "tsup.config.ts"]
 }

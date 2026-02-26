@@ -1,43 +1,16 @@
-"use strict";
-var __defProp = Object.defineProperty;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, { get: all[name], enumerable: true });
-};
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
-
-// src/index.ts
-var index_exports = {};
-__export(index_exports, {
-  useEffectTask: () => useEffectTask,
-  useEvent: () => useEvent
-});
-module.exports = __toCommonJS(index_exports);
-
 // src/useEvent.ts
-var import_react = require("react");
+import { useCallback, useRef } from "react";
 function useEvent(fn) {
-  const fnRef = (0, import_react.useRef)(fn);
+  const fnRef = useRef(fn);
   fnRef.current = fn;
-  const stableFn = (0, import_react.useCallback)((...args) => {
+  const stableFn = useCallback((...args) => {
     return fnRef.current(...args);
   }, []);
   return stableFn;
 }
 
 // src/useEffectTask.ts
-var import_react2 = require("react");
+import { useEffect, useLayoutEffect, useRef as useRef2 } from "react";
 function isPromise(value) {
   return typeof value?.then === "function";
 }
@@ -61,9 +34,9 @@ function reportError(error, signal, options) {
   }
 }
 function useEffectTask(task, deps, options) {
-  const runIdRef = (0, import_react2.useRef)(0);
+  const runIdRef = useRef2(0);
   const latestTask = useEvent(task);
-  const selectedEffect = options?.layout ? import_react2.useLayoutEffect : import_react2.useEffect;
+  const selectedEffect = options?.layout ? useLayoutEffect : useEffect;
   selectedEffect(() => {
     const runId = ++runIdRef.current;
     const controller = new AbortController();
@@ -107,6 +80,10 @@ function useEffectTask(task, deps, options) {
         fn();
       },
       onCleanup: (fn) => {
+        if (disposed) {
+          runCleanup(fn);
+          return;
+        }
         cleanupStack.push(fn);
       }
     };
@@ -134,8 +111,7 @@ function useEffectTask(task, deps, options) {
     return dispose;
   }, deps);
 }
-// Annotate the CommonJS export names for ESM import in node:
-0 && (module.exports = {
+export {
   useEffectTask,
   useEvent
-});
+};

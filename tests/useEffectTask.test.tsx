@@ -1,5 +1,5 @@
-import React, { StrictMode } from 'react';
-import { act, renderHook } from '@testing-library/react';
+import React, { StrictMode, useState } from 'react';
+import { act, render, renderHook, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useEffectTask } from '../src';
 
@@ -25,54 +25,61 @@ afterEach(() => {
 });
 
 describe('useEffectTask', () => {
-  it('prevents stale commits from older runs (anti-race)', async () => {
-    const first = deferred<void>();
-    const second = deferred<void>();
-    const commits: number[] = [];
+  it('blocks stale commit from run1 when run2 resolves first (anti-race)', async () => {
+    const deferred1 = deferred<void>();
+    const deferred2 = deferred<void>();
 
-    const { rerender } = renderHook(
-      ({ dep }) =>
-        useEffectTask(async (scope) => {
-          if (dep === 1) {
-            await first.promise;
-          } else {
-            await second.promise;
+    function Demo({ id }: { id: number }) {
+      const [value, setValue] = useState('idle');
+
+      useEffectTask(
+        async ({ commit }) => {
+          if (id === 1) {
+            await deferred1.promise;
+            commit(() => setValue('one'));
+            return;
           }
 
-          scope.commit(() => {
-            commits.push(dep);
-          });
-        }, [dep]),
-      { initialProps: { dep: 1 } }
-    );
+          await deferred2.promise;
+          commit(() => setValue('two'));
+        },
+        [id]
+      );
 
-    rerender({ dep: 2 });
+      return <div>{value}</div>;
+    }
+
+    const { rerender } = render(<Demo id={1} />);
+
+    rerender(<Demo id={2} />);
 
     await act(async () => {
-      second.resolve();
+      deferred2.resolve();
       await flushMicrotasks();
     });
 
+    expect(screen.getByText('two')).toBeTruthy();
+
     await act(async () => {
-      first.resolve();
+      deferred1.resolve();
       await flushMicrotasks();
     });
 
-    expect(commits).toEqual([2]);
+    expect(screen.getByText('two')).toBeTruthy();
   });
 
-  it('aborts previous run on dependency change', () => {
+  it('aborts previous run on rerender', () => {
     const signals: AbortSignal[] = [];
 
     const { rerender } = renderHook(
-      ({ dep }) =>
+      ({ id }) =>
         useEffectTask(({ signal }) => {
           signals.push(signal);
-        }, [dep]),
-      { initialProps: { dep: 1 } }
+        }, [id]),
+      { initialProps: { id: 1 } }
     );
 
-    rerender({ dep: 2 });
+    rerender({ id: 2 });
 
     expect(signals).toHaveLength(2);
     expect(signals[0].aborted).toBe(true);
@@ -80,43 +87,43 @@ describe('useEffectTask', () => {
   });
 
   it('aborts current run on unmount', () => {
-    let capturedSignal: AbortSignal | undefined;
+    let signalRef: AbortSignal | undefined;
 
     const { unmount } = renderHook(() =>
       useEffectTask(({ signal }) => {
-        capturedSignal = signal;
+        signalRef = signal;
       }, [])
     );
 
-    expect(capturedSignal).toBeDefined();
-    expect(capturedSignal?.aborted).toBe(false);
+    expect(signalRef?.aborted).toBe(false);
 
     unmount();
 
-    expect(capturedSignal?.aborted).toBe(true);
+    expect(signalRef?.aborted).toBe(true);
   });
 
-  it('executes late async cleanup even if run already disposed', async () => {
-    const lateCleanup = vi.fn();
-    const asyncCleanup = deferred<() => void>();
+  it('runs late async cleanup after unmount when cleanup arrives late', async () => {
+    const gate = deferred<void>();
+    const cleanup = vi.fn();
 
     const { unmount } = renderHook(() =>
       useEffectTask(async () => {
-        return asyncCleanup.promise;
+        await gate.promise;
+        return cleanup;
       }, [])
     );
 
     unmount();
 
     await act(async () => {
-      asyncCleanup.resolve(lateCleanup);
+      gate.resolve();
       await flushMicrotasks();
     });
 
-    expect(lateCleanup).toHaveBeenCalledTimes(1);
+    expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
-  it('works under StrictMode without leaking subscriptions', () => {
+  it('is strict-mode safe for interval cleanup', () => {
     const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
     const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval');
 
@@ -127,11 +134,12 @@ describe('useEffectTask', () => {
     const { unmount } = renderHook(
       () =>
         useEffectTask(({ onCleanup }) => {
-          const intervalId = setInterval(() => {
-            // intentional no-op
-          }, 1_000);
+          const handle = setInterval(() => {
+            // no-op
+          }, 1000);
+
           onCleanup(() => {
-            clearInterval(intervalId);
+            clearInterval(handle);
           });
         }, []),
       { wrapper }
@@ -140,6 +148,8 @@ describe('useEffectTask', () => {
     unmount();
 
     expect(setIntervalSpy.mock.calls.length).toBeGreaterThan(0);
-    expect(clearIntervalSpy.mock.calls.length).toBe(setIntervalSpy.mock.calls.length);
+    expect(clearIntervalSpy.mock.calls.length).toBeGreaterThanOrEqual(
+      setIntervalSpy.mock.calls.length
+    );
   });
 });

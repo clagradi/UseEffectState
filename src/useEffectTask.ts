@@ -119,6 +119,11 @@ export function useEffectTask(
         fn();
       },
       onCleanup: (fn) => {
+        if (disposed) {
+          runCleanup(fn);
+          return;
+        }
+
         cleanupStack.push(fn);
       }
     };
