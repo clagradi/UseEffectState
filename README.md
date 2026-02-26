@@ -1,11 +1,11 @@
 # effect-runtime
 
-`@TU_SCOPE/effect-runtime` is a tiny React 18+ primitive that makes async effects safer than raw `useEffect`.
+`@clagradi/effect-runtime` is a tiny React 18+ primitive that makes async effects safer than raw `useEffect`.
 
 ## Install
 
 ```bash
-npm i @TU_SCOPE/effect-runtime
+npm i @clagradi/effect-runtime
 ```
 
 ## API
@@ -38,7 +38,7 @@ export function useEffectTask(
 
 ```tsx
 import { useState } from 'react';
-import { useEffectTask } from '@TU_SCOPE/effect-runtime';
+import { useEffectTask } from '@clagradi/effect-runtime';
 
 export function UserCard({ userId }: { userId: string }) {
 	const [name, setName] = useState('loading...');
@@ -63,7 +63,7 @@ export function UserCard({ userId }: { userId: string }) {
 
 ```tsx
 import { useState } from 'react';
-import { useEffectTask, useEvent } from '@TU_SCOPE/effect-runtime';
+import { useEffectTask, useEvent } from '@clagradi/effect-runtime';
 
 export function Counter() {
 	const [count, setCount] = useState(0);
@@ -81,7 +81,7 @@ export function Counter() {
 ### Example 3: subscription with `onCleanup`
 
 ```tsx
-import { useEffectTask } from '@TU_SCOPE/effect-runtime';
+import { useEffectTask } from '@clagradi/effect-runtime';
 
 type Subscription = { unsubscribe: () => void };
 declare function subscribeToRoom(roomId: string, cb: (msg: string) => void): Subscription;
@@ -135,12 +135,12 @@ export function RoomFeed({ roomId }: { roomId: string }) {
 	 npm i /absolute/path/to/UseEffectState
 
 	 # from generated tarball
-	 npm i /absolute/path/to/UseEffectState/TU_SCOPE-effect-runtime-0.1.0.tgz
+	 npm i /absolute/path/to/UseEffectState/clagradi-effect-runtime-0.1.0.tgz
 	 ```
 
 4. Verify in the consumer app:
 
-	 - `import { useEffectTask, useEvent } from '@TU_SCOPE/effect-runtime'` resolves.
+	 - `import { useEffectTask, useEvent } from '@clagradi/effect-runtime'` resolves.
 	 - TypeScript picks up package types from `dist/index.d.ts` (run `npm run typecheck`).
 
 ## Publishing to npm
@@ -148,7 +148,7 @@ export function RoomFeed({ roomId }: { roomId: string }) {
 1. Check package name availability:
 
 	 ```bash
-	 npm view @TU_SCOPE/effect-runtime
+	 npm view @clagradi/effect-runtime
 	 # 404 => available
 	 ```
 

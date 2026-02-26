@@ -1,5 +1,5 @@
 {
-  "name": "@TU_SCOPE/effect-runtime",
+  "name": "@clagradi/effect-runtime",
   "version": "0.1.0",
   "description": "Better async effect primitive for React 18+",
   "license": "MIT",
