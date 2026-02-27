@@ -3,6 +3,23 @@
   "version": "0.1.0",
   "description": "Better async effect primitive for React 18+",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/clagradi/UseEffectState.git"
+  },
+  "bugs": {
+    "url": "https://github.com/clagradi/UseEffectState/issues"
+  },
+  "homepage": "https://github.com/clagradi/UseEffectState#readme",
+  "keywords": [
+    "react",
+    "hooks",
+    "useeffect",
+    "async",
+    "abortcontroller",
+    "effect",
+    "concurrency"
+  ],
   "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -15,12 +32,17 @@
   },
   "files": ["dist"],
   "sideEffects": false,
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "build": "tsup",
+    "pack:check": "npm pack --dry-run",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run typecheck && npm run test && npm run build"
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build && npm run pack:check"
   },
   "peerDependencies": {
     "react": ">=18"

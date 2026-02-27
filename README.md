@@ -1,11 +1,23 @@
 # effect-runtime
 
-`@clagradi/effect-runtime` is a tiny React 18+ primitive that makes async effects safer than raw `useEffect`.
+[![npm version](https://img.shields.io/npm/v/@clagradi/effect-runtime.svg)](https://www.npmjs.com/package/@clagradi/effect-runtime)
+[![CI](https://github.com/clagradi/UseEffectState/actions/workflows/ci.yml/badge.svg)](https://github.com/clagradi/UseEffectState/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/clagradi/UseEffectState/blob/main/LICENSE)
+
+`@clagradi/effect-runtime` is a small React 18+ primitive for safer async effects.
 
 ## Install
 
 ```bash
 npm i @clagradi/effect-runtime
+```
+
+```bash
+pnpm add @clagradi/effect-runtime
+```
+
+```bash
+yarn add @clagradi/effect-runtime
 ```
 
 ## API
@@ -14,71 +26,80 @@ npm i @clagradi/effect-runtime
 export function useEvent<T extends (...args: any[]) => any>(fn: T): T;
 
 type EffectTaskScope = {
-	signal: AbortSignal;
-	runId: number;
-	isActive(): boolean;
-	commit(fn: () => void): void;
-	onCleanup(fn: () => void): void;
+  signal: AbortSignal;
+  runId: number;
+  isActive(): boolean;
+  commit(fn: () => void): void;
+  onCleanup(fn: () => void): void;
 };
 
 type EffectTask =
-	(scope: EffectTaskScope) =>
-		void | (() => void) | Promise<void | (() => void)>;
+  (scope: EffectTaskScope) =>
+    void | (() => void) | Promise<void | (() => void)>;
 
 export function useEffectTask(
-	task: EffectTask,
-	deps: any[],
-	options?: { layout?: boolean; onError?: (err: unknown) => void; debugName?: string }
+  task: EffectTask,
+  deps: any[],
+  options?: { layout?: boolean; onError?: (err: unknown) => void; debugName?: string }
 ): void;
 ```
 
-## Quickstart
+## Why better than useEffect
 
-### Example 1: fetch with `signal` + anti-race `commit`
+- Per-run `AbortController` (auto abort on rerun/unmount)
+- `commit()` anti-race guard for stale async completions
+- Late async cleanup is still executed after dispose
+- `onCleanup()` supports multiple cleanups with LIFO order
+- `useEvent` gives stable callbacks without stale closures
+- StrictMode-safe effect lifecycle behavior
+
+## Examples
+
+### 1) Fetch with `signal` + anti-race `commit`
 
 ```tsx
 import { useState } from 'react';
 import { useEffectTask } from '@clagradi/effect-runtime';
 
 export function UserCard({ userId }: { userId: string }) {
-	const [name, setName] = useState('loading...');
+  const [name, setName] = useState('loading...');
 
-	useEffectTask(
-		async ({ signal, commit }) => {
-			const response = await fetch(`/api/users/${userId}`, { signal });
-			const user = (await response.json()) as { name: string };
+  useEffectTask(
+    async ({ signal, commit }) => {
+      const response = await fetch(`/api/users/${userId}`, { signal });
+      const user = (await response.json()) as { name: string };
 
-			commit(() => {
-				setName(user.name);
-			});
-		},
-		[userId]
-	);
+      commit(() => {
+        setName(user.name);
+      });
+    },
+    [userId]
+  );
 
-	return <div>{name}</div>;
+  return <div>{name}</div>;
 }
 ```
 
-### Example 2: interval with `useEvent`
+### 2) Interval with `useEvent`
 
 ```tsx
 import { useState } from 'react';
 import { useEffectTask, useEvent } from '@clagradi/effect-runtime';
 
 export function Counter() {
-	const [count, setCount] = useState(0);
-	const onTick = useEvent(() => setCount((value) => value + 1));
+  const [count, setCount] = useState(0);
+  const onTick = useEvent(() => setCount((value) => value + 1));
 
-	useEffectTask(({ onCleanup }) => {
-		const handle = setInterval(() => onTick(), 1000);
-		onCleanup(() => clearInterval(handle));
-	}, []);
+  useEffectTask(({ onCleanup }) => {
+    const handle = setInterval(() => onTick(), 1000);
+    onCleanup(() => clearInterval(handle));
+  }, []);
 
-	return <span>{count}</span>;
+  return <span>{count}</span>;
 }
 ```
 
-### Example 3: subscription with `onCleanup`
+### 3) Subscription with `onCleanup`
 
 ```tsx
 import { useEffectTask } from '@clagradi/effect-runtime';
@@ -87,94 +108,87 @@ type Subscription = { unsubscribe: () => void };
 declare function subscribeToRoom(roomId: string, cb: (msg: string) => void): Subscription;
 
 export function RoomFeed({ roomId }: { roomId: string }) {
-	useEffectTask(({ onCleanup }) => {
-		const sub = subscribeToRoom(roomId, (msg) => {
-			console.log(msg);
-		});
+  useEffectTask(({ onCleanup }) => {
+    const sub = subscribeToRoom(roomId, (msg) => {
+      console.log(msg);
+    });
 
-		onCleanup(() => sub.unsubscribe());
-	}, [roomId]);
+    onCleanup(() => sub.unsubscribe());
+  }, [roomId]);
 
-	return null;
+  return null;
 }
 ```
 
-## Why better than useEffect
-
-- Per-run `AbortController` (auto-abort on rerun/unmount)
-- `commit()` anti-race guard for stale async completions
-- Multiple cleanups with LIFO execution via `onCleanup()`
-- Late async cleanup is never lost (executes immediately if resolved after dispose)
-- `useEvent` gives stable identity + latest closure
-
 ## Caveats
 
-- This is not a data-fetching cache layer (not React Query/SWR).
-- No SSR orchestration/caching features.
+- Not a data-fetching cache (this is not React Query/SWR).
+- No caching/SSR orchestration features.
 
 ## Release checklist
 
-1. Run package checks:
+1. Run checks:
 
-	 ```bash
-	 npm run typecheck
-	 npm run test
-	 npm run build
-	 ```
+```bash
+npm run typecheck
+npm run test
+npm run build
+```
 
-2. Create a package tarball:
+2. Pack the library:
 
-	 ```bash
-	 npm pack
-	 ```
+```bash
+npm pack
+# optional sanity check only
+npm run pack:check
+```
 
-3. Install locally in a separate app (use either method):
+3. Install in a separate consumer app:
 
-	 ```bash
-	 # from repo folder path
-	 npm i /absolute/path/to/effect-runtime
+```bash
+# from local folder
+npm i /absolute/path/to/effect-runtime
 
-	 # from generated tarball
-	 npm i /absolute/path/to/effect-runtime/clagradi-effect-runtime-0.1.0.tgz
-	 ```
+# from package tarball
+npm i /absolute/path/to/effect-runtime/clagradi-effect-runtime-<version>.tgz
+```
 
-4. Verify in the consumer app:
+4. Verify in consumer app:
 
-	 - `import { useEffectTask, useEvent } from '@clagradi/effect-runtime'` resolves.
-	 - TypeScript picks up package types from `dist/index.d.ts` (run `npm run typecheck`).
+- `import { useEffectTask, useEvent } from '@clagradi/effect-runtime'` resolves.
+- TypeScript sees package types from `dist/index.d.ts`.
 
 ## Publishing to npm
 
-1. Check package name availability:
+1. Check package name status:
 
-	 ```bash
-	 npm view @clagradi/effect-runtime
-	 # 404 => available
-	 ```
+```bash
+npm view @clagradi/effect-runtime
+```
 
-2. Login:
+2. Bump version for the next release:
 
-	 ```bash
-	 npm login
-	 ```
+```bash
+npm version patch # or minor / major
+```
 
-3. Publish the package:
+3. Publish manually:
 
-	 ```bash
-	 npm publish --access public
-	 ```
+```bash
+npm login
+npm publish --access public
+```
 
-	 Scoped packages default to private. Always pass `--access public` for public releases.
+4. Or publish via CI on tag push:
 
-4. Versioning:
+```bash
+git push --follow-tags
+```
 
-	 ```bash
-	 npm version patch # or minor / major
-	 git push
-	 git push --tags
-	 ```
+Scoped packages default to private. Always pass `--access public` for public publish.
 
-5. Tag/release strategy:
+CI publish workflow runs on tags matching `v*` and publishes with provenance:
 
-	 - CI publish runs when pushing a tag matching `v*` (for example `v0.1.0`) or when a GitHub Release is published.
-	 - The publish workflow uses `npm publish --provenance --access public` with `NODE_AUTH_TOKEN=${{ secrets.NPM_TOKEN }}`.
+```bash
+npm publish --provenance --access public
+```
