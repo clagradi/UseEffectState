@@ -1,6 +1,6 @@
 {
   "name": "@clagradi/effect-runtime",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Better async effect primitive for React 18+",
   "license": "MIT",
   "repository": {
@@ -35,12 +35,12 @@
   ],
   "sideEffects": false,
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   },
   "scripts": {
     "build": "tsup",
     "pack:check": "npm pack --dry-run",
+    "smoke:consumer": "node ./scripts/smoke-consumer.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
@@ -59,6 +59,6 @@
     "react-dom": "^18.3.1",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vitest": "^4.0.18"
   }
 }

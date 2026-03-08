@@ -1,7 +1,11 @@
 node_modules/
 dist/
 coverage/
+.tmp/
 .vscode/
 .DS_Store
 *.log
 *.tgz
+*.tsbuildinfo
+examples/vite-react/vite.config.js
+examples/vite-react/vite.config.d.ts

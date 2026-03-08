@@ -1,7 +1,7 @@
 import React, { StrictMode, useState } from 'react';
 import { act, render, renderHook, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { useEffectTask } from '../src';
+import { useEffectTask, useEvent } from '../src';
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -151,5 +151,39 @@ describe('useEffectTask', () => {
     expect(clearIntervalSpy.mock.calls.length).toBeGreaterThanOrEqual(
       setIntervalSpy.mock.calls.length
     );
+  });
+
+  it('useEvent keeps a stable identity between renders', () => {
+    const { result, rerender } = renderHook(
+      ({ value }) =>
+        useEvent(() => {
+          return value;
+        }),
+      { initialProps: { value: 'one' } }
+    );
+
+    const firstHandler = result.current;
+
+    rerender({ value: 'two' });
+
+    expect(result.current).toBe(firstHandler);
+  });
+
+  it('useEvent always reads the latest closure', () => {
+    const { result, rerender } = renderHook(
+      ({ value }) =>
+        useEvent(() => {
+          return value;
+        }),
+      { initialProps: { value: 'one' } }
+    );
+
+    const handler = result.current;
+
+    expect(handler()).toBe('one');
+
+    rerender({ value: 'two' });
+
+    expect(handler()).toBe('two');
   });
 });

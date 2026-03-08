@@ -14,6 +14,7 @@ npm install
 npm run typecheck
 npm run test
 npm run build
+npm run smoke:consumer
 ```
 
 ## Pull request checklist
@@ -21,5 +22,6 @@ npm run build
 - Keep changes focused and minimal.
 - Add or update tests when behavior changes.
 - Update docs when API or usage changes.
+- Do not commit build artifacts like `dist/` or `*.tgz`.
 - Ensure CI passes before requesting review.
 - Use clear commit messages and PR description.
