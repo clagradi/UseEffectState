@@ -1,6 +1,8 @@
-# Vite React playground
+# Vite + React playground
 
-This folder is a standalone demo app for `@clagradi/effect-runtime`.
+A standalone demo app for `@clagradi/effect-runtime`. It runs in `StrictMode` and uses a
+simulated API (random latency, `AbortSignal` support, optional failures) with a live network log,
+so you can see exactly which requests get aborted.
 
 ## Run locally
 
@@ -10,24 +12,25 @@ npm install
 npm run dev
 ```
 
-## Validate against a packed tarball
-
-From the repository root:
+The app installs `@clagradi/effect-runtime` from npm. To try unreleased changes from this
+repository instead, run the consumer smoke test from the repository root (it installs the packed
+tarball here) and then `npm run dev`:
 
 ```bash
 npm run smoke:consumer
+cd examples/vite-react && npm run dev
 ```
 
-This builds the library, packs it, installs the tarball here, then runs `typecheck` and `build`.
+## Demos
 
-## Demos included
-
-- `FetchDemo`: `useEffectTask` with `signal` + `commit` anti-race update.
-- `IntervalDemo`: `useEvent` to read latest state in interval callbacks.
-- `SubscriptionDemo`: `onCleanup` for subscribe/unsubscribe lifecycle pairing.
+- **Race lab**: naive `useEffect` + `useState` vs `useEffectState` with out-of-order responses.
+- **useEffectState**: `status` / `data` / `error` / `isRunning`, `reload()`, simulated failures.
+- **Debounced search**: `await sleep(300)` + `enabled` + `initialData` + `keepPreviousData`.
+- **Polling loop**: `useEffectTask` with a `for (;;)` loop, `commit()` and `sleep()`.
+- **useEvent**: an interval created once that always sees the latest state.
+- **onCleanup**: subscribe / unsubscribe per room, LIFO cleanups.
 
 ## Notes
 
-- This app is for local/manual validation only.
-- The npm package publish is still controlled by root `package.json` `files: ["dist"]`.
-- CI installs the packed tarball here to verify the consumer path, not the source tree.
+- This folder is not published to npm (the root package ships only `dist/`).
+- CI installs the packed tarball here and runs `typecheck` + `build` to verify the consumer path.
