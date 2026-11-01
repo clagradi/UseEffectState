@@ -1,0 +1,42 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: development
+        update-types: [minor, patch]
+    ignore:
+      # TypeScript 7 (native) is not supported by typescript-eslint yet; bump deliberately.
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
+      # React majors are tested via the CI matrix; bump deliberately.
+      - dependency-name: react
+        update-types: [version-update:semver-major]
+      - dependency-name: react-dom
+        update-types: [version-update:semver-major]
+      - dependency-name: '@types/react'
+        update-types: [version-update:semver-major]
+      - dependency-name: '@types/react-dom'
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: npm
+    directory: /examples/vite-react
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      example:
+        patterns: ['*']
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ['*']

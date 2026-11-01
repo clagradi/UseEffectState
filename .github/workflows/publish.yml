@@ -1,41 +1,81 @@
 name: Publish package
 
+# Publishes to npm when a version tag (v*) is pushed, then creates the GitHub release.
+#
+# Authentication (pick one, see CONTRIBUTING.md):
+# - Recommended: npm trusted publishing (OIDC). On npmjs.com > package settings >
+#   Trusted publishing, add GitHub Actions with repository "clagradi/UseEffectState"
+#   and workflow "publish.yml". No secret is needed and provenance is automatic.
+# - Fallback: an npm granular access token stored as the NPM_TOKEN repository secret.
+
 on:
   push:
     tags:
-      - 'v*'
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+  # Re-run a failed release by hand: choose the release tag (not a branch) as the ref.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
-      contents: read
-      id-token: write
+      contents: write # create the GitHub release
+      id-token: write # npm trusted publishing + provenance
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          # npm >= 11.5.1 is required for trusted publishing; Node 24 ships npm 11.
+          node-version-file: .nvmrc
           registry-url: 'https://registry.npmjs.org'
-          cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Typecheck
-        run: npm run typecheck
+      - name: Check that the tag matches package.json
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "$expected" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $expected"
+            exit 1
+          fi
 
-      - name: Test
-        run: npm run test
+      - name: Lint, typecheck, test, build, package checks
+        run: npm run check
 
-      - name: Build
-        run: npm run build
+      - name: Consumer smoke test
+        run: npm run smoke:consumer
 
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        run: |
+          # npm 11 refuses to publish a prerelease without an explicit dist-tag.
+          case "$GITHUB_REF_NAME" in
+            *-*) dist_tag=next ;;
+            *) dist_tag=latest ;;
+          esac
+          npm publish --provenance --access public --tag "$dist_tag"
         env:
+          # Only used when trusted publishing is not configured.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node ./scripts/changelog-section.mjs "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" --verify-tag $prerelease
