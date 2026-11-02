@@ -9,4 +9,4 @@ export type {
 export { useEffectTask, useLayoutEffectTask } from './useEffectTask';
 export type { EffectTask, UseEffectTaskOptions } from './useEffectTask';
 export { useEvent } from './useEvent';
-export type { EffectTaskCleanup, EffectTaskScope } from './types';
+export type { DependencyList, EffectTaskCleanup, EffectTaskScope } from './types';

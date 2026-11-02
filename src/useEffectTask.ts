@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import type { DependencyList } from 'react';
 import { useCommitPhaseEffect, useIsomorphicLayoutEffect } from './internal/environment';
 import { createUnstableDepsDetector } from './internal/deps';
 import { isAbortError, reportError } from './internal/errors';
 import { createRun, isPromiseLike } from './internal/run';
-import type { EffectTaskCleanup, EffectTaskScope } from './types';
+import type { DependencyList, EffectTaskCleanup, EffectTaskScope } from './types';
 import { useEvent } from './useEvent';
 
 /**

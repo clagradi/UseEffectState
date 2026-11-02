@@ -362,18 +362,18 @@ useEffectTask(async ({ onCleanup, abortable, commit }) => {
 
 ## ESLint
 
-`react-hooks/exhaustive-deps` can check the deps of these hooks too:
+`eslint-plugin-react-hooks` can check the deps of these hooks too. Its shared setting covers both
+`exhaustive-deps` and the `useEffectEvent` call-site rule:
 
 ```js
 // eslint.config.js
 export default [
   // ...
   {
-    rules: {
-      'react-hooks/exhaustive-deps': [
-        'warn',
-        { additionalHooks: '(useEffectTask|useLayoutEffectTask|useEffectState)' }
-      ]
+    settings: {
+      'react-hooks': {
+        additionalEffectHooks: '^(useEffectTask|useLayoutEffectTask|useEffectState)$'
+      }
     }
   }
 ];

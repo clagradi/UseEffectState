@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import type { DependencyList } from 'react';
 import { useCommitPhaseEffect } from './internal/environment';
 import { reportError } from './internal/errors';
 import { createUnstableDepsDetector, depsEqual } from './internal/deps';
 import { createRun, isPromiseLike } from './internal/run';
 import type { Run } from './internal/run';
-import type { EffectTaskScope } from './types';
+import type { DependencyList, EffectTaskScope } from './types';
 import { useEvent } from './useEvent';
 
 export type EffectStateStatus = 'idle' | 'pending' | 'success' | 'error';

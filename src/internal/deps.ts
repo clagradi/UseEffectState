@@ -1,4 +1,4 @@
-import type { DependencyList } from 'react';
+import type { DependencyList } from '../types';
 
 /** Compares two deps arrays the way React does: same length, `Object.is` per item. */
 export function depsEqual(a: DependencyList, b: DependencyList): boolean {

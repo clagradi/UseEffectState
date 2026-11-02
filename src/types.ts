@@ -1,3 +1,10 @@
+/**
+ * The dependency array of the hooks: compared item by item with `Object.is`,
+ * like `useEffect`'s. Same shape as React's `DependencyList`, declared here so
+ * the published types do not depend on `@types/react`.
+ */
+export type DependencyList = readonly unknown[];
+
 /** A cleanup function registered for a run. */
 export type EffectTaskCleanup = () => void;
 
