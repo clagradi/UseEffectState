@@ -66,6 +66,8 @@ describe('useEffectTask: lifecycle', () => {
 
     expect(scope?.signal.aborted).toBe(true);
     expect(scope?.isActive()).toBe(false);
+    expect((scope?.signal.reason as Error).name).toBe('AbortError');
+    expect((scope?.signal.reason as Error).message).toBe('The effect run ended.');
   });
 
   it('does not re-run when deps are unchanged', () => {
@@ -260,6 +262,35 @@ describe('useEffectTask: cleanups', () => {
 
     expect(cleanup).toHaveBeenCalledTimes(2);
     expect(returned).toHaveBeenCalledTimes(2);
+  });
+
+  it('onCleanup returns a function that runs the cleanup early, at most once', () => {
+    const order: string[] = [];
+    let early: (() => void) | undefined;
+    const { unmount } = renderHook(() =>
+      useEffectTask(({ onCleanup }) => {
+        onCleanup(() => order.push('a'));
+        early = onCleanup(() => order.push('b'));
+        onCleanup(() => order.push('c'));
+      }, [])
+    );
+
+    early?.();
+    early?.();
+    expect(order).toEqual(['b']);
+
+    unmount();
+    expect(order).toEqual(['b', 'c', 'a']);
+  });
+
+  it('still runs a cleanup once when the task returns onCleanup(...) (the 0.1 idiom)', () => {
+    const cleanup = vi.fn();
+    const { unmount } = renderHook(() =>
+      useEffectTask(({ onCleanup }) => onCleanup(cleanup), [])
+    );
+
+    unmount();
+    expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
   it('ignores non-function values passed to onCleanup', () => {
@@ -625,7 +656,7 @@ describe('useEffectTask: errors', () => {
   });
 });
 
-describe('useEffectTask: sleep and abortable', () => {
+describe('useEffectTask: sleep', () => {
   it('sleep resolves after the delay', async () => {
     const done = vi.fn();
     renderHook(() =>
@@ -704,44 +735,6 @@ describe('useEffectTask: sleep and abortable', () => {
     await expect(scope?.sleep(10)).rejects.toBe(scope?.signal.reason);
   });
 
-  it('abortable passes values and errors through while active', async () => {
-    let scope: EffectTaskScope | undefined;
-    renderHook(() =>
-      useEffectTask((current) => {
-        scope = current;
-      }, [])
-    );
-
-    await expect(scope?.abortable(Promise.resolve(42))).resolves.toBe(42);
-    const failure = new Error('inner failure');
-    await expect(scope?.abortable(Promise.reject(failure))).rejects.toBe(failure);
-  });
-
-  it('abortable rejects as soon as the run ends and swallows the late outcome', async () => {
-    const rejections = captureUnhandledRejections();
-    const inner = deferred<number>();
-    let scope: EffectTaskScope | undefined;
-
-    try {
-      const { unmount } = renderHook(() =>
-        useEffectTask((current) => {
-          scope = current;
-        }, [])
-      );
-
-      const wrapped = scope!.abortable(inner.promise);
-      unmount();
-      await expect(wrapped).rejects.toBe(scope?.signal.reason);
-      await expect(scope!.abortable(Promise.resolve(1))).rejects.toBe(scope?.signal.reason);
-
-      inner.reject(new Error('late inner failure'));
-      await wait(10);
-    } finally {
-      rejections.restore();
-    }
-
-    expect(rejections.reasons).toEqual([]);
-  });
 });
 
 describe('useEffectTask: React integration', () => {
@@ -963,37 +956,6 @@ describe('useEffectTask: React integration', () => {
 
     render(<Demo count={1} />);
     expect(seen).toEqual([1]);
-  });
-});
-
-describe('useEffectTask: deps', () => {
-  it('warns once when a dependency is recreated on every render', () => {
-    const { warn } = captureConsole();
-    const task = vi.fn();
-    const { rerender } = renderHook(({ id }) => useEffectTask(task, [{ id }], { debugName: 'Probe' }), {
-      initialProps: { id: 1 }
-    });
-
-    for (let index = 0; index < 5; index += 1) {
-      rerender({ id: 1 });
-    }
-
-    expect(task).toHaveBeenCalledTimes(6);
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(String(warn.mock.calls[0]?.[0])).toContain('useEffectTask (Probe)');
-  });
-
-  it('does not warn when objects in deps really change', () => {
-    const { warn } = captureConsole();
-    const { rerender } = renderHook(({ id }) => useEffectTask(() => undefined, [{ id }]), {
-      initialProps: { id: 1 }
-    });
-
-    for (let id = 2; id <= 6; id += 1) {
-      rerender({ id });
-    }
-
-    expect(warn).not.toHaveBeenCalled();
   });
 });
 

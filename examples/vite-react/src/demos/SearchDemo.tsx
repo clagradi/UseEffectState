@@ -13,7 +13,7 @@ export function SearchDemo() {
       return api.searchUsers(query, { signal });
     },
     [query],
-    { enabled: query.trim().length > 0, initialData: [], keepPreviousData: true }
+    { enabled: query.trim().length > 0, placeholderData: [], keepPreviousData: true }
   );
 
   return (
@@ -22,7 +22,7 @@ export function SearchDemo() {
       <p>
         <code>await sleep(300)</code> at the start of the task debounces it: typing ends the run,
         so only the last query hits the network. <code>keepPreviousData</code> keeps the old
-        results on screen while the new ones load.
+        results on screen (dimmed, <code>isPlaceholderData</code>) while the new ones load.
       </p>
 
       <label>
@@ -44,7 +44,7 @@ export function SearchDemo() {
       {results.status === 'success' && results.data.length === 0 ? (
         <p className="muted">No matches.</p>
       ) : null}
-      <ul className="results">
+      <ul className={`results ${results.isPlaceholderData ? 'stale' : ''}`}>
         {results.data.map((user) => (
           <li key={user.id}>
             <strong>{user.name}</strong> <span className="muted">· {user.company}</span>

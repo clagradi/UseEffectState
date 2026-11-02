@@ -1,12 +1,13 @@
-# effect-runtime
+# useEffectState and useEffectTask for React
 
 [![npm version](https://img.shields.io/npm/v/@clagradi/effect-runtime.svg)](https://www.npmjs.com/package/@clagradi/effect-runtime)
 [![CI](https://github.com/clagradi/UseEffectState/actions/workflows/ci.yml/badge.svg)](https://github.com/clagradi/UseEffectState/actions/workflows/ci.yml)
 [![bundle size](https://img.shields.io/bundlephobia/minzip/@clagradi/effect-runtime)](https://bundlephobia.com/package/@clagradi/effect-runtime)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/clagradi/UseEffectState/blob/main/LICENSE)
 
-**Async effects for React that cancel, clean up and race correctly.**
+**`@clagradi/effect-runtime`: async effects for React that cancel, clean up and race correctly.**
 Tiny, dependency-free, typed, React 18 and 19, StrictMode-, SSR- and `<Activity>`-safe.
+(Not related to the Effect-TS library.)
 
 ```tsx
 import { useEffectState } from '@clagradi/effect-runtime';
@@ -24,11 +25,11 @@ function UserCard({ userId }: { userId: string }) {
 }
 ```
 
-- **No races.** Every run gets its own `AbortSignal`; results of runs that ended are ignored.
+- **No races.** Every run gets its own `AbortSignal`; outcomes of runs that ended are ignored.
 - **No leaks.** Runs are aborted on re-run and unmount; cleanups run in LIFO order, even when they arrive late.
-- **No stale UI.** When deps change, `useEffectState` reports `pending` in the same render: the previous result is never shown as the result for new deps.
-- **No stale closures.** The latest task always runs; deps only decide *when*.
-- **No swallowed errors.** Task and cleanup errors are reported (or stored in state), abort errors are not.
+- **No stale UI.** When deps change, `useEffectState` is `pending` in the same render: a previous result is never shown as the result for new deps.
+- **No stale closures.** The latest committed task always runs; deps only decide *when*.
+- **No swallowed errors.** Task and cleanup errors are reported (or stored in state), cancellations are not.
 
 ## Contents
 
@@ -60,7 +61,7 @@ pnpm add @clagradi/effect-runtime
 yarn add @clagradi/effect-runtime
 ```
 
-Requires React 18 or 19. Ships ESM and CommonJS with TypeScript types. No dependencies.
+Requires React 18 or 19. Ships ESM and CommonJS with TypeScript types (TS 5.0+). No dependencies.
 
 ## Why
 
@@ -77,7 +78,7 @@ useEffect(() => {
 
 Fixing it by hand means an `AbortController`, a `cancelled` flag, loading/error state, and cleanup
 bookkeeping in every effect. This library is that bookkeeping, done once and tested against React 18
-and 19 (including StrictMode and concurrent rendering):
+and 19 (including StrictMode, `<Activity>` and concurrent rendering):
 
 ```tsx
 const user = useEffectState(({ signal }) => fetchUser(userId, { signal }), [userId]);
@@ -96,29 +97,30 @@ function useEffectState<T>(
 ```
 
 The task runs after mount, again whenever `deps` change, and on `reload()`. Its return value (or
-resolved value) becomes `data`. It receives the same [scope](#the-task-scope) as `useEffectTask`:
-`signal`, `commit`, `onCleanup`, `sleep`, `abortable`, ...
+resolved value) becomes `data`. It receives the same [scope](#the-task-scope) as `useEffectTask`
+(`signal`, `commit`, `onCleanup`, `sleep`, ...), so side effects that belong to a run go in the task.
 
-`deps` work exactly like `useEffect`'s (compared with `Object.is`), so keep them primitive or
-stable: an inline object, array or function is new on every render and makes the task re-run after
-every render. The hooks detect that pattern and print a one-time warning.
+`deps` work exactly like `useEffect`'s (compared with `Object.is`). Keep them primitive or stable: a
+dependency recreated on every render (an inline object, array or function) makes React stop with
+"Too many re-renders", so the mistake shows up immediately instead of refetching forever.
 
 ### Returned state
 
-| Field       | Type                                         | Description                                                                                       |
-| ----------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `status`    | `'idle' \| 'pending' \| 'success' \| 'error'` | Outcome for the **current deps**. `pending`: no result yet. `idle`: disabled and no result.        |
-| `data`      | `T \| undefined`                             | Latest successful result (or `initialData`). Typed `T` when `status === 'success'`.               |
-| `error`     | `unknown`                                    | The error when `status === 'error'`, otherwise `undefined`.                                        |
-| `isRunning` | `boolean`                                    | A run is in flight: first load, deps change or `reload()`.                                         |
-| `isPending` / `isSuccess` / `isError` | `boolean`          | Shorthands for `status` checks (they narrow the type too).                                         |
-| `reload()`  | `() => void`                                 | Aborts the current run immediately (if any) and runs the task again with the same deps. Keeps `data`/`status`. Ignored while disabled. |
-| `setData()` | `(value \| (previous) => value) => void`      | Replaces `data` locally (optimistic updates). Sets `status` to `success`.                          |
+| Field               | Type                                          | Description                                                                                         |
+| ------------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `status`            | `'idle' \| 'pending' \| 'success' \| 'error'` | Outcome for the **current deps**. `pending`: no outcome yet. `idle`: disabled and no outcome.        |
+| `data`              | `T \| undefined`                              | Latest result, or a stand-in (see `isPlaceholderData`). Typed `T` when `status === 'success'`.       |
+| `error`             | `unknown`                                     | The error when `status === 'error'`, otherwise `undefined`.                                          |
+| `isRunning`         | `boolean`                                     | A run whose outcome will be applied is in flight: first run, deps change or `reload()`.             |
+| `isPlaceholderData` | `boolean`                                     | `data` is a stand-in (`placeholderData`, or the previous deps' data kept by `keepPreviousData`).    |
+| `reload()`          | `() => void`                                  | Runs the task again with the same deps (the run in flight is aborted at the next commit). Keeps `status`, `data` and `error` until the new run settles. Does nothing while disabled. |
+| `setData()`         | `(value \| (previous) => value) => void`       | Replaces `data` locally (optimistic updates): `status` becomes `success`. A run in flight still replaces it when it settles. |
 
-`status` and `isRunning` are independent on purpose: during `reload()` you keep showing data
-(`status: 'success'`) while `isRunning` drives a subtle refresh indicator.
+`status` and `isRunning` are independent on purpose: during `reload()` you keep showing the data
+(`status: 'success'`) or the error (`status: 'error'`) while `isRunning` drives a refresh indicator.
 
-`status` is a discriminated union, so TypeScript narrows `data` and `error` for you:
+`status` is a discriminated union, so TypeScript narrows the other fields for you, also after
+destructuring:
 
 ```tsx
 const { status, data, error } = useEffectState(loadTodos, []);
@@ -127,30 +129,31 @@ if (status === 'success') data.map(/* data: Todo[] */);
 
 ### Options
 
-| Option             | Default     | Description                                                                                      |
-| ------------------ | ----------- | ------------------------------------------------------------------------------------------------ |
-| `enabled`          | `true`      | When `false` the task does not run (and a running one is aborted). `reload()` is ignored.        |
-| `initialData`      | `undefined` | `data` until the first success, and after deps change. Value or lazy function (read once on mount). With it, `data` is typed `T` instead of `T \| undefined`. |
-| `keepPreviousData` | `false`     | On deps change, keep the previous `data` while the new run is pending instead of resetting it (not when the change also disables the hook). |
-| `onSuccess`        | —           | Called with the data after a run succeeds (current run only).                                    |
-| `onError`          | —           | Called with the error after a run fails (current run only). The error is stored in state either way, and never logged. |
-| `debugName`        | —           | Labels this hook in console messages (for example when a callback throws).                       |
+| Option             | Default     | Description                                                                                       |
+| ------------------ | ----------- | ------------------------------------------------------------------------------------------------- |
+| `enabled`          | `true`      | When `false` the task does not run: a run in flight is aborted, `reload()` does nothing, `pending` becomes `idle`. Other values go through `Boolean()`. |
+| `placeholderData`  | `undefined` | `data` while there is no outcome for the current deps. Captured when the hook enters new deps (mount and each deps change), so a value derived from props stays right. With it, `data` is typed `T` instead of `T \| undefined`. |
+| `keepPreviousData` | `false`     | On deps change, keep the data on screen (with `isPlaceholderData: true`) until the new run settles, instead of switching to `placeholderData`. Never carries data into `idle`. |
+
+There are no `onSuccess` / `onError` callbacks: the task body is already the place for side
+effects of a run, and errors live in `error`.
 
 ### Transitions
 
-| Event                         | `status`                                            | `data`                                    | `isRunning` |
-| ----------------------------- | --------------------------------------------------- | ----------------------------------------- | ----------- |
-| mount (enabled)               | `pending`                                           | `initialData`                             | `true`      |
-| run resolves                  | `success`                                           | result                                    | `false`     |
-| run rejects                   | `error`                                             | unchanged                                 | `false`     |
-| deps change (same render)     | `pending`                                           | `initialData` (or previous with `keepPreviousData`) | `true` |
-| `reload()`                    | unchanged                                           | unchanged                                 | `true`      |
-| `setData(v)`                  | `success`                                           | `v`                                       | unchanged   |
-| `enabled: false`              | `idle` if nothing settled yet, otherwise unchanged  | unchanged                                 | `false`     |
+| Event                              | `status`                                     | `data`                                            | `isRunning` |
+| ---------------------------------- | -------------------------------------------- | ------------------------------------------------- | ----------- |
+| mount (enabled)                    | `pending`                                    | `placeholderData`                                 | `true`      |
+| run resolves                       | `success`                                    | result                                            | `false`     |
+| run rejects                        | `error`                                      | unchanged                                         | `false`     |
+| deps change (same render)          | `pending`                                    | `placeholderData`, or the data on screen with `keepPreviousData` | `true` |
+| `reload()`                         | unchanged                                    | unchanged                                         | `true`      |
+| `setData(v)`                       | `success`                                    | `v`                                               | unchanged   |
+| `enabled: false`                   | `idle` if `pending`, otherwise unchanged      | `placeholderData` if it was `pending`, otherwise unchanged | `false` |
+| `enabled: true` again              | `pending` if `idle`, otherwise unchanged     | unchanged                                         | `true`      |
 
-Results and errors from runs that already ended are ignored, so cancelling a run (deps change,
-`reload()`, `enabled: false`, unmount) never produces an `error`. This holds from the moment the
-change commits, even before React runs the effect cleanup that aborts the old run.
+Outcomes of runs that ended are ignored, so cancelling a run (deps change, `reload()`,
+`enabled: false`, unmount) never produces an `error`. This holds from the moment the change
+commits, even before React runs the effect cleanup that aborts the old run.
 
 ## `useEffectTask` and `useLayoutEffectTask`
 
@@ -179,34 +182,34 @@ useEffectTask(async ({ signal, commit }) => {
 - The task may be sync or async. It may return (or resolve to) a cleanup function; a cleanup that
   arrives after the run ended is executed immediately. Because React cannot wait for promises, such
   a late cleanup can run after the next run already started: register cleanups with `onCleanup`
-  right after acquiring a resource, and use `abortable()` / `isActive()` after an `await`.
-- `useLayoutEffectTask` runs as a layout effect (after DOM mutations, before paint) and silently
-  falls back to `useEffect` on the server, so React 18 never prints its SSR `useLayoutEffect` warning.
+  right after acquiring a resource, and check `isActive()` after an `await`.
+- `useLayoutEffectTask` runs as a layout effect (after DOM mutations, before paint) and falls back
+  to `useEffect` on the server, so React 18 never prints its SSR `useLayoutEffect` warning.
 
 | Option      | Description                                                                                                    |
 | ----------- | -------------------------------------------------------------------------------------------------------------- |
-| `onError`   | Receives errors thrown by the task and by cleanups. Without it they surface like errors in a plain effect: through the global `reportError` in browsers (reaching `window.onerror`, error monitoring and dev overlays), otherwise `console.error`. The latest value is always used. |
-| `debugName` | Labels this hook in console messages. With it, errors reported through `reportError` also get a labelled `console.warn`. |
+| `onError`   | Receives errors thrown by the task and by cleanups. Without it they surface like errors in a plain effect: through the global `reportError` in browsers (reaching `window.onerror`, error monitoring and dev overlays), `ErrorUtils.reportError` on React Native, otherwise `console.error`. The latest value is always used. |
+| `debugName` | Labels this hook in console messages. With it, errors handed to `reportError` / `ErrorUtils` also get a labelled `console.warn`. |
 | `layout`    | **Deprecated**, use `useLayoutEffectTask`. Read once on mount.                                                   |
 
 ## The task scope
 
-Both hooks pass the same scope to the task. A *run* starts when the effect fires and ends when it
-is disposed: deps change, `reload()`, `enabled: false`, or unmount.
+All hooks pass the same scope to the task. A *run* starts when the effect fires and ends when it is
+disposed: deps change, `reload()`, `enabled: false`, `<Activity>` hiding the component, or unmount.
+Its members are plain functions, so destructuring them is safe.
 
-| Member              | Description                                                                                                                  |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `signal`            | `AbortSignal` aborted when the run ends. Pass it to `fetch`, `axios`, and other abortable APIs.                              |
-| `isActive()`        | `true` until the run ends.                                                                                                   |
-| `commit(fn)`        | Calls `fn` only if the run is still active. Use it around state updates after an `await`.                                  |
-| `onCleanup(fn)`     | Registers a cleanup. Cleanups run in reverse order (LIFO) when the run ends; registering after that runs `fn` immediately.  |
-| `sleep(ms)`         | Abortable delay: resolves after `ms`, rejects with the abort reason when the run ends. `await sleep(300)` first = debounce. |
-| `abortable(promise)`| Wraps a promise that cannot take a signal; it rejects as soon as the run ends, so the task stops waiting.                    |
-| `runId`             | Sequential run number for this hook instance (handy for logging).                                                           |
+| Member          | Description                                                                                                                         |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `signal`        | `AbortSignal` aborted when the run ends (reason: an `AbortError`, "The effect run ended."). Pass it to `fetch`, `axios`, ...      |
+| `isActive()`    | `true` until the run ends.                                                                                                          |
+| `commit(fn)`    | Calls `fn` only if the run is still active. Use it around state updates after an `await`.                                          |
+| `onCleanup(fn)` | Registers a cleanup. Cleanups run in reverse order (LIFO) when the run ends; registering after that runs `fn` immediately. Returns a function that runs `fn` early (at most once) and unregisters it. |
+| `sleep(ms)`     | Abortable delay: resolves after `ms`, rejects with the abort reason when the run ends. `await sleep(300)` first = debounce.        |
+| `runId`         | Sequential run number for this hook instance (handy for logging).                                                                  |
 
-When a run ends, its signal is aborted first and then its cleanups run, newest first. The cleanup
-returned by the task counts as registered when it is returned, so it runs before earlier
-`onCleanup` registrations:
+When a run ends, it is marked inactive, its signal is aborted, and then its cleanups run, newest
+first. The cleanup returned by the task counts as registered when it is returned, so it runs before
+earlier `onCleanup` registrations:
 
 ```tsx
 useEffectTask(async ({ signal, onCleanup }) => {
@@ -223,9 +226,9 @@ useEffectTask(async ({ signal, onCleanup }) => {
 function useEvent<T extends Function>(fn: T): T;
 ```
 
-Returns a function with a stable identity that always calls the latest `fn`: the userland twin of
-React 19.2's `useEffectEvent` (same typing), usable on React 18 too. Use it for callbacks that
-intervals, subscriptions, effects or event handlers call later.
+Returns a function with a stable identity that always calls the latest committed `fn`: like React
+19.2's `useEffectEvent` (same typing), but usable on React 18 too, and callable from anywhere that
+is not render (effects, event handlers, timers, subscriptions, child components).
 
 ```tsx
 const onTick = useEvent(() => setLog(`${count} ${label}`)); // always sees the latest count/label
@@ -252,8 +255,19 @@ const results = useEffectState(
     return searchUsers(query, { signal });
   },
   [query],
-  { enabled: query.length > 0, initialData: [], keepPreviousData: true }
+  { enabled: query.length > 0, placeholderData: [], keepPreviousData: true }
 );
+```
+
+### Pagination
+
+```tsx
+const page = useEffectState(({ signal }) => fetchPage(pageNumber, { signal }), [pageNumber], {
+  keepPreviousData: true
+});
+
+<List items={page.data ?? []} dimmed={page.isPlaceholderData} />;
+<button disabled={page.isPlaceholderData} onClick={() => setPageNumber((n) => n + 1)}>Next</button>;
 ```
 
 ### Polling
@@ -279,6 +293,19 @@ const org = useEffectState(({ signal }) => fetchOrg(orgId!, { signal }), [orgId]
 });
 ```
 
+### Run on demand
+
+```tsx
+const [request, setRequest] = useState<ReportRequest | null>(null);
+const report = useEffectState(({ signal }) => buildReport(request!, { signal }), [request], {
+  enabled: request !== null
+});
+
+// A new request object starts a new run; clearing it cancels.
+<button onClick={() => setRequest({ from, to })}>Generate</button>;
+<button onClick={() => setRequest(null)} disabled={!report.isRunning}>Cancel</button>;
+```
+
 ### Retry with backoff
 
 ```tsx
@@ -297,14 +324,19 @@ const report = useEffectState(async ({ signal, sleep }) => {
 ### Optimistic update
 
 ```tsx
-const todos = useEffectState(({ signal }) => fetchTodos({ signal }), [], { initialData: [] });
+const [saving, setSaving] = useState(0);
+const todos = useEffectState(({ signal }) => fetchTodos({ signal }), [], {
+  enabled: saving === 0, // pause reads while saving, so an older read cannot overwrite the change
+  placeholderData: []
+});
 
 async function toggle(todo: Todo) {
   todos.setData((list) => list.map((t) => (t.id === todo.id ? { ...t, done: !t.done } : t)));
+  setSaving((count) => count + 1);
   try {
     await saveTodo({ ...todo, done: !todo.done });
   } finally {
-    todos.reload(); // re-sync with the server either way
+    setSaving((count) => count - 1); // enabling again re-reads from the server
   }
 }
 ```
@@ -315,9 +347,11 @@ async function toggle(todo: Todo) {
 const [page, setPage] = useState(1);
 const [items, setItems] = useState<Item[]>([]);
 
-const current = useEffectState(({ signal }) => fetchItems(page, { signal }), [page], {
-  onSuccess: (next) => setItems((previous) => (page === 1 ? next : [...previous, ...next]))
-});
+const current = useEffectState(async ({ signal, commit }) => {
+  const next = await fetchItems(page, { signal });
+  commit(() => setItems((previous) => (page === 1 ? next : [...previous, ...next])));
+  return next;
+}, [page]);
 
 // Changing `page` aborts the page in flight, so wait for it before asking for the next one.
 <button disabled={current.isRunning} onClick={() => setPage((value) => value + 1)}>
@@ -325,40 +359,49 @@ const current = useEffectState(({ signal }) => fetchItems(page, { signal }), [pa
 </button>;
 ```
 
-### Subscriptions and non-abortable APIs
+### Subscriptions to APIs without a signal
 
 ```tsx
-useEffectTask(async ({ onCleanup, abortable, commit }) => {
-  const sdk = await abortable(loadSdk()); // stops here if the run ends while loading
-  const unsubscribe = sdk.onChange((value) => commit(() => setValue(value)));
-  onCleanup(unsubscribe);
+useEffectTask(async ({ isActive, onCleanup, commit }) => {
+  const sdk = await loadSdk();
+  if (!isActive()) return; // the run ended while loading
+  onCleanup(sdk.onChange((value) => commit(() => setValue(value))));
 }, []);
+```
+
+### Error boundaries
+
+Errors are stored (`useEffectState`) or reported (`useEffectTask`), not thrown into render. To hand
+one to the nearest error boundary, rethrow it during render:
+
+```tsx
+const user = useEffectState(loadUser, [id]);
+if (user.status === 'error') throw user.error;
 ```
 
 ## Behaviour details
 
 - **StrictMode**: React mounts effects twice in development. The first run is aborted and cleaned
-  up like any other run, and its result is ignored. (A task that finishes synchronously completes
-  before React's extra unmount, so in development its `onSuccess` / `onError` run twice, like any
-  synchronous effect code.)
-- **Concurrent rendering**: the latest task, callbacks and options are published in the commit
-  phase, so renders that React throws away never leak into effects.
-- **SSR**: effects never run on the server. `useEffectState` renders `pending` (or `idle` when
-  disabled) with `initialData`, so hydration matches; the task starts on the client.
+  up like any other run, and its outcome is ignored. (A task that finishes synchronously completes
+  before React's extra unmount, so in development its side effects run twice, like any synchronous
+  effect code.)
+- **Concurrent rendering**: the task that runs is always the latest *committed* one, and late
+  callbacks read the latest committed options, so renders that React throws away never leak in.
+  A deps change is applied during the render itself and commits once.
+- **SSR and hydration**: effects never run on the server. `useEffectState` renders `pending` (or
+  `idle` when disabled) with `placeholderData`, so hydration matches; the task starts on the client.
 - **`<Activity mode="hidden">`** (React 19.2+): hiding a subtree ends its runs (signal aborted,
-  cleanups run) while state is preserved; showing it again starts a new run.
-- **Errors**: cancellation never produces errors: results and errors of runs that already ended are
-  ignored (many libraries reject with their own error type when aborted, such as axios'
-  `CanceledError`). `useEffectTask` also ignores `AbortError`s and reports other errors to
-  `onError`; without it they surface like errors thrown in a plain effect (`reportError` in
-  browsers, `console.error` elsewhere). `useEffectState` stores every error of the current run in
-  `error` (an `AbortError` from your own controller included, so the state can never get stuck in
-  `isRunning`). Errors thrown by cleanups are always reported, never swallowed.
-- **Error boundaries**: task errors are reported, not thrown into render. To hand one to the nearest
-  error boundary, rethrow it from a state update:
-  `const [, setCrash] = useState(); ... { onError: (error) => setCrash(() => { throw error; }) }`.
-- **Environments**: browsers, React Native, Node/Deno/Bun SSR, and edge runtimes. No reliance on
-  `DOMException` or `process.env`.
+  cleanups run) while state is preserved; showing it again starts a new run without a `pending`
+  flash (`isRunning` turns `true` one commit after the reveal).
+- **Errors**: cancellation never produces errors: anything from runs that already ended is ignored
+  (many libraries reject with their own error type when aborted, such as axios' `CanceledError`).
+  `useEffectTask` also ignores `AbortError`s and reports other errors to `onError`; without it they
+  surface like errors thrown in a plain effect (`reportError` in browsers, `ErrorUtils.reportError`
+  on React Native, `console.error` elsewhere). `useEffectState` stores every error of the current run
+  in `error`, an `AbortError` from your own controller included, so the state never hangs in
+  `isRunning`. Errors thrown by cleanups are always reported, never swallowed.
+- **Environments**: browsers, React Native, Node/Deno/Bun SSR and edge runtimes. Nothing relies on
+  `DOMException`, `process.env` or `reportError` existing.
 
 ## ESLint
 
@@ -379,9 +422,10 @@ export default [
 ];
 ```
 
-One caveat: the plugin treats every hook whose name contains `Effect` like `useEffect`, so it also
-warns that "Effect callbacks are synchronous" for `async` tasks. Tasks written as functions that
-return a promise do not trigger it, for example
+It also flags the inline object/array/function deps that make `useEffectState` stop with "Too many
+re-renders". One caveat: the plugin treats every hook whose name contains `Effect` like
+`useEffect`, so it also warns that "Effect callbacks are synchronous" for `async` tasks. Tasks
+written as functions that return a promise do not trigger it, for example
 `useEffectState(({ signal }) => fetchUser(id, { signal }), [id])`.
 
 ## When to use something else
@@ -396,20 +440,24 @@ return a promise do not trigger it, for example
 
 ## Migrating from 0.1
 
-`0.2` is a drop-in upgrade for almost all code. Behaviour changes:
+`0.2` is a drop-in upgrade for almost all `useEffectTask` / `useEvent` code. Behaviour changes:
 
 - Errors thrown by cleanup functions are now reported (they were silently swallowed).
 - The cleanup returned by a task now runs **before** cleanups registered earlier with `onCleanup`
   (consistent LIFO order).
 - Without `onError`, task errors surface in every environment: through `reportError` in browsers
-  (like errors thrown in a plain effect), otherwise `console.error`. 0.1 tried to log only outside
-  production, but bundlers never replaced that check.
+  (like errors thrown in a plain effect), `ErrorUtils.reportError` on React Native, otherwise
+  `console.error`. 0.1 tried to log only outside production, but bundlers never replaced that check.
+- The run's `signal.reason` is an `AbortError` with the message "The effect run ended.".
+- `onCleanup()` returns a function that runs the cleanup early (the 0.1 idiom
+  `({ onCleanup }) => onCleanup(fn)` still runs `fn` exactly once).
 - `useEvent` callbacks throw if called during the first render (they would run with uncommitted
   values); call them from effects or event handlers. `useEvent` is now typed like React's
   `useEffectEvent`: annotate callback parameters (strict TypeScript no longer lets them be `any`).
 - `layout: true` is deprecated in favour of `useLayoutEffectTask`, and is read once on mount.
-- The package is now `"type": "module"` with correct dual ESM/CommonJS exports and types. If you
-  deep-imported files from `dist/`, import from the package root instead.
+- The package is now `"type": "module"` with correct dual ESM/CommonJS exports and types, and the
+  peer range is `react ^18.0.0 || ^19.0.0`. If you deep-imported files from `dist/`, import from
+  the package root instead.
 
 ## Playground
 
@@ -432,7 +480,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md). In short:
 
 ```bash
 npm install
-npm run check          # lint, typecheck, tests, build, package checks
+npm run check          # lint, typecheck, tests with coverage, build, package checks
 npm run smoke:consumer # installs the packed tarball into a Node consumer and the example app
 ```
 

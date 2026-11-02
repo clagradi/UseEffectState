@@ -1,8 +1,11 @@
 import type { EffectTaskCleanup, EffectTaskScope } from '../types';
-import { abortReasonOf } from './errors';
+import { abortReasonOf, createAbortError } from './errors';
 
 /** The largest delay `setTimeout` supports before it overflows and fires immediately. */
 const MAX_TIMEOUT = 2_147_483_647;
+
+/** The abort reason of every run's signal: identifiable across runtimes and polyfills. */
+const RUN_ENDED = 'The effect run ended.';
 
 export interface Run {
   readonly scope: EffectTaskScope;
@@ -14,7 +17,7 @@ export interface Run {
    * the run is disposed; registering after disposal runs the cleanup at once.
    */
   addCleanup(cleanup: EffectTaskCleanup): void;
-  /** Aborts the signal, then runs the cleanups. Idempotent. */
+  /** Ends the run: marks it inactive, aborts the signal, then runs the cleanups. Idempotent. */
   dispose(): void;
 }
 
@@ -26,6 +29,8 @@ export function isPromiseLike<T>(value: unknown): value is PromiseLike<T> {
   );
 }
 
+const noop = (): void => undefined;
+
 /**
  * Creates one run of a task: its own AbortController, cleanup stack and the
  * scope object handed to user code. Framework-agnostic; the hooks decide when
@@ -36,7 +41,8 @@ export function isPromiseLike<T>(value: unknown): value is PromiseLike<T> {
 export function createRun(runId: number, reportCleanupError: (error: unknown) => void): Run {
   const controller = new AbortController();
   const signal = controller.signal;
-  const cleanups: EffectTaskCleanup[] = [];
+  // One entry per registration, so the same function can be registered twice.
+  const cleanups: Array<{ fn: EffectTaskCleanup }> = [];
   let disposed = false;
 
   const isActive = (): boolean => !disposed;
@@ -49,17 +55,29 @@ export function createRun(runId: number, reportCleanupError: (error: unknown) =>
     }
   };
 
-  const addCleanup = (cleanup: EffectTaskCleanup): void => {
+  const onCleanup = (cleanup: EffectTaskCleanup): (() => void) => {
     if (typeof cleanup !== 'function') {
-      return;
+      return noop;
     }
 
     if (disposed) {
       runCleanup(cleanup);
-      return;
+      return noop;
     }
 
-    cleanups.push(cleanup);
+    const entry = { fn: cleanup };
+    cleanups.push(entry);
+
+    // Runs the cleanup now (at most once) and unregisters it. Returning it from a
+    // concise task (`({ onCleanup }) => onCleanup(fn)`) therefore still runs fn
+    // exactly once when the run ends.
+    return () => {
+      const index = cleanups.indexOf(entry);
+      if (index !== -1) {
+        cleanups.splice(index, 1);
+        runCleanup(cleanup);
+      }
+    };
   };
 
   const dispose = (): void => {
@@ -68,10 +86,10 @@ export function createRun(runId: number, reportCleanupError: (error: unknown) =>
     }
 
     disposed = true;
-    controller.abort();
+    controller.abort(createAbortError(RUN_ENDED));
 
     while (cleanups.length > 0) {
-      runCleanup(cleanups.pop() as EffectTaskCleanup);
+      runCleanup((cleanups.pop() as { fn: EffectTaskCleanup }).fn);
     }
   };
 
@@ -102,31 +120,6 @@ export function createRun(runId: number, reportCleanupError: (error: unknown) =>
       }
     });
 
-  const abortable = <T>(work: PromiseLike<T>): Promise<T> =>
-    new Promise<T>((resolve, reject) => {
-      if (signal.aborted) {
-        reject(abortReasonOf(signal));
-        return;
-      }
-
-      const onAbort = (): void => {
-        reject(abortReasonOf(signal));
-      };
-
-      signal.addEventListener('abort', onAbort, { once: true });
-
-      Promise.resolve(work).then(
-        (value) => {
-          signal.removeEventListener('abort', onAbort);
-          resolve(value);
-        },
-        (error: unknown) => {
-          signal.removeEventListener('abort', onAbort);
-          reject(error);
-        }
-      );
-    });
-
   const scope: EffectTaskScope = {
     signal,
     runId,
@@ -136,10 +129,17 @@ export function createRun(runId: number, reportCleanupError: (error: unknown) =>
         fn();
       }
     },
-    onCleanup: addCleanup,
-    sleep,
-    abortable
+    onCleanup,
+    sleep
   };
 
-  return { scope, signal, isActive, addCleanup, dispose };
+  return {
+    scope,
+    signal,
+    isActive,
+    addCleanup: (cleanup) => {
+      onCleanup(cleanup);
+    },
+    dispose
+  };
 }

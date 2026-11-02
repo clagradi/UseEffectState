@@ -16,7 +16,7 @@ describe('server rendering', () => {
       useEffectTask(task, [], { layout: true });
       const user = useEffectState(async () => 'data', []);
       const disabled = useEffectState(async () => 'data', [], { enabled: false });
-      const seeded = useEffectState(async () => ['fresh'], [], { initialData: () => ['initial'] });
+      const seeded = useEffectState(async () => ['fresh'], [], { placeholderData: ['initial'] });
       const onClick = useEvent(() => undefined);
 
       return createElement(

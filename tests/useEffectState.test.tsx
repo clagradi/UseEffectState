@@ -8,13 +8,21 @@ import {
   useState
 } from 'react';
 import { flushSync } from 'react-dom';
-import { createRoot } from 'react-dom/client';
+import { createRoot, hydrateRoot } from 'react-dom/client';
+import { renderToString } from 'react-dom/server';
 import { act, render, renderHook, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { useEffectState } from '../src';
-import type { EffectState, EffectTaskScope } from '../src';
-import { Activity, captureConsole, createSuspender, deferred, flushMicrotasks, wait } from './helpers';
-import type { SetEffectStateData } from '../src';
+import type { EffectState, EffectTaskScope, SetEffectStateData } from '../src';
+import {
+  Activity,
+  ErrorBoundary,
+  captureConsole,
+  createSuspender,
+  deferred,
+  flushMicrotasks,
+  wait
+} from './helpers';
 
 async function flush(): Promise<void> {
   await act(async () => {
@@ -22,13 +30,34 @@ async function flush(): Promise<void> {
   });
 }
 
-function snapshot<T>(state: EffectState<T>) {
+function snapshot<T, TData>(state: EffectState<T, TData>) {
   return {
     status: state.status,
     data: state.data,
     error: state.error,
-    isRunning: state.isRunning
+    isRunning: state.isRunning,
+    isPlaceholderData: state.isPlaceholderData
   };
+}
+
+function gates<T>() {
+  const map = new Map<number, ReturnType<typeof deferred<T>>>();
+  return (id: number) => {
+    if (!map.has(id)) map.set(id, deferred<T>());
+    return map.get(id)!;
+  };
+}
+
+/** Runs a test body outside act(), the way React schedules work in a real browser. */
+async function withoutAct(body: () => Promise<void>): Promise<void> {
+  const actGlobal = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+  const previous = actGlobal.IS_REACT_ACT_ENVIRONMENT;
+  actGlobal.IS_REACT_ACT_ENVIRONMENT = false;
+  try {
+    await body();
+  } finally {
+    actGlobal.IS_REACT_ACT_ENVIRONMENT = previous;
+  }
 }
 
 describe('useEffectState: transitions', () => {
@@ -40,9 +69,9 @@ describe('useEffectState: transitions', () => {
       status: 'pending',
       data: undefined,
       error: undefined,
-      isRunning: true
+      isRunning: true,
+      isPlaceholderData: false
     });
-    expect(result.current.isPending).toBe(true);
 
     await act(async () => {
       gate.resolve('hello');
@@ -52,10 +81,9 @@ describe('useEffectState: transitions', () => {
       status: 'success',
       data: 'hello',
       error: undefined,
-      isRunning: false
+      isRunning: false,
+      isPlaceholderData: false
     });
-    expect(result.current.isSuccess).toBe(true);
-    expect(result.current.isPending).toBe(false);
   });
 
   it('supports sync tasks', async () => {
@@ -65,11 +93,13 @@ describe('useEffectState: transitions', () => {
       status: 'success',
       data: 42,
       error: undefined,
-      isRunning: false
+      isRunning: false,
+      isPlaceholderData: false
     });
   });
 
-  it('stores sync and async errors', async () => {
+  it('stores sync and async errors, without logging them', async () => {
+    const { error: consoleError } = captureConsole();
     const syncError = new Error('sync');
     const asyncError = new Error('async');
     const { result: sync } = renderHook(() =>
@@ -88,19 +118,15 @@ describe('useEffectState: transitions', () => {
 
     expect(sync.current.status).toBe('error');
     expect(sync.current.error).toBe(syncError);
-    expect(sync.current.isError).toBe(true);
     expect(async.current.status).toBe('error');
     expect(async.current.error).toBe(asyncError);
     expect(async.current.isRunning).toBe(false);
+    expect(consoleError).not.toHaveBeenCalled();
   });
 
-  it('reports pending in the same render when deps change (never old data for new deps)', async () => {
+  it('is pending in the same render when deps change (never old data for new deps)', async () => {
     const renders: Array<{ id: number; status: string; data: unknown }> = [];
-    const gates = new Map<number, ReturnType<typeof deferred<string>>>();
-    const gateFor = (id: number) => {
-      if (!gates.has(id)) gates.set(id, deferred<string>());
-      return gates.get(id)!;
-    };
+    const gateFor = gates<string>();
 
     function Demo({ id }: { id: number }) {
       const user = useEffectState(() => gateFor(id).promise, [id]);
@@ -123,14 +149,32 @@ describe('useEffectState: transitions', () => {
     expect(renders[renders.length - 1]).toEqual({ id: 2, status: 'success', data: 'user-2' });
   });
 
+  it('commits a deps change once', async () => {
+    const gateFor = gates<string>();
+    let commits = 0;
+
+    function Demo({ id }: { id: number }) {
+      useEffectState(() => gateFor(id).promise, [id]);
+      useLayoutEffect(() => {
+        commits += 1;
+      });
+      return null;
+    }
+
+    const { rerender } = render(<Demo id={1} />);
+    await act(async () => gateFor(1).resolve('one'));
+    commits = 0;
+    rerender(<Demo id={2} />);
+
+    expect(commits).toBe(1);
+  });
+
   it('ignores a stale run that resolves after a newer one', async () => {
     const first = deferred<string>();
     const second = deferred<string>();
-    const onSuccess = vi.fn();
 
     const { result, rerender } = renderHook(
-      ({ id }) =>
-        useEffectState(() => (id === 1 ? first.promise : second.promise), [id], { onSuccess }),
+      ({ id }) => useEffectState(() => (id === 1 ? first.promise : second.promise), [id]),
       { initialProps: { id: 1 } }
     );
 
@@ -139,15 +183,12 @@ describe('useEffectState: transitions', () => {
     await act(async () => first.resolve('one'));
 
     expect(result.current.data).toBe('two');
-    expect(onSuccess.mock.calls).toEqual([['two']]);
   });
 
   it('ignores errors from runs that ended', async () => {
     const first = deferred<string>();
-    const onError = vi.fn();
     const { result, rerender } = renderHook(
-      ({ id }) =>
-        useEffectState(() => (id === 1 ? first.promise : Promise.resolve('two')), [id], { onError }),
+      ({ id }) => useEffectState(() => (id === 1 ? first.promise : Promise.resolve('two')), [id]),
       { initialProps: { id: 1 } }
     );
 
@@ -157,7 +198,6 @@ describe('useEffectState: transitions', () => {
 
     expect(result.current.status).toBe('success');
     expect(result.current.data).toBe('two');
-    expect(onError).not.toHaveBeenCalled();
   });
 
   it('turns an AbortError from another source into an error instead of hanging', async () => {
@@ -176,7 +216,7 @@ describe('useEffectState: transitions', () => {
     expect(result.current.isRunning).toBe(false);
   });
 
-  it('aborts the run when deps change and on unmount', () => {
+  it('aborts the run when deps change and on unmount, with a library abort reason', () => {
     const scopes: EffectTaskScope[] = [];
     const { rerender, unmount } = renderHook(
       ({ id }) =>
@@ -192,17 +232,24 @@ describe('useEffectState: transitions', () => {
 
     rerender({ id: 2 });
     expect(scopes[0]?.signal.aborted).toBe(true);
+    expect((scopes[0]?.signal.reason as Error).name).toBe('AbortError');
+    expect((scopes[0]?.signal.reason as Error).message).toBe('The effect run ended.');
     expect(scopes[1]?.signal.aborted).toBe(false);
 
     unmount();
     expect(scopes[1]?.signal.aborted).toBe(true);
   });
 
-  it('runs onCleanup cleanups when the run ends', () => {
+  it('runs onCleanup cleanups when the run ends and reports their errors', () => {
+    const { error: consoleError } = captureConsole();
     const cleanup = vi.fn();
+    const failure = new Error('cleanup failed');
     const { unmount } = renderHook(() =>
       useEffectState(({ onCleanup }) => {
         onCleanup(cleanup);
+        onCleanup(() => {
+          throw failure;
+        });
         return 1;
       }, [])
     );
@@ -210,6 +257,7 @@ describe('useEffectState: transitions', () => {
     expect(cleanup).not.toHaveBeenCalled();
     unmount();
     expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(consoleError).toHaveBeenCalledWith('[effect-runtime] useEffectState cleanup failed:', failure);
   });
 
   it('does not re-run for unrelated re-renders', async () => {
@@ -247,10 +295,10 @@ describe('useEffectState: transitions', () => {
 describe('useEffectState: reload and setData', () => {
   it('reload keeps data and status while running, then updates', async () => {
     let calls = 0;
-    const gates = [deferred<number>(), deferred<number>()];
-    const { result } = renderHook(() => useEffectState(() => gates[calls++]!.promise, []));
+    const runs = [deferred<number>(), deferred<number>()];
+    const { result } = renderHook(() => useEffectState(() => runs[calls++]!.promise, []));
 
-    await act(async () => gates[0]!.resolve(1));
+    await act(async () => runs[0]!.resolve(1));
     expect(result.current.data).toBe(1);
 
     act(() => result.current.reload());
@@ -258,24 +306,27 @@ describe('useEffectState: reload and setData', () => {
       status: 'success',
       data: 1,
       error: undefined,
-      isRunning: true
+      isRunning: true,
+      isPlaceholderData: false
     });
 
-    await act(async () => gates[1]!.resolve(2));
+    await act(async () => runs[1]!.resolve(2));
     expect(snapshot(result.current)).toEqual({
       status: 'success',
       data: 2,
       error: undefined,
-      isRunning: false
+      isRunning: false,
+      isPlaceholderData: false
     });
   });
 
-  it('reload aborts the run in flight', () => {
+  it('reload aborts the run in flight at the next commit and ignores its late outcome', async () => {
+    const first = deferred<string>();
     const scopes: EffectTaskScope[] = [];
     const { result } = renderHook(() =>
       useEffectState((scope) => {
         scopes.push(scope);
-        return new Promise<number>(() => undefined);
+        return scopes.length === 1 ? first.promise : new Promise<string>(() => undefined);
       }, [])
     );
 
@@ -284,6 +335,15 @@ describe('useEffectState: reload and setData', () => {
     expect(scopes.length).toBe(2);
     expect(scopes[0]?.signal.aborted).toBe(true);
     expect(scopes[1]?.signal.aborted).toBe(false);
+
+    await act(async () => first.resolve('stale'));
+    expect(snapshot(result.current)).toEqual({
+      status: 'pending',
+      data: undefined,
+      error: undefined,
+      isRunning: true,
+      isPlaceholderData: false
+    });
   });
 
   it('keeps the previous data when a reload fails, and recovers on retry', async () => {
@@ -312,7 +372,8 @@ describe('useEffectState: reload and setData', () => {
       status: 'success',
       data: 3,
       error: undefined,
-      isRunning: false
+      isRunning: false,
+      isPlaceholderData: false
     });
   });
 
@@ -327,7 +388,7 @@ describe('useEffectState: reload and setData', () => {
     expect(result.current.setData).toBe(setData);
   });
 
-  it('setData accepts a value or an updater and marks the state as success', async () => {
+  it('setData accepts a value or an updater; the run in flight still wins', async () => {
     const gate = deferred<number[]>();
     const { result } = renderHook(() => useEffectState(() => gate.promise, []));
 
@@ -336,18 +397,18 @@ describe('useEffectState: reload and setData', () => {
       status: 'success',
       data: [1],
       error: undefined,
-      isRunning: true
+      isRunning: true,
+      isPlaceholderData: false
     });
 
     act(() => result.current.setData((previous) => [...(previous ?? []), 2]));
     expect(result.current.data).toEqual([1, 2]);
 
-    // The run still in flight wins when it settles.
     await act(async () => gate.resolve([9]));
     expect(result.current.data).toEqual([9]);
   });
 
-  it('setData clears a stored error', async () => {
+  it('setData clears a stored error; setting the same value is a no-op', async () => {
     const { result } = renderHook(() =>
       useEffectState(async (): Promise<string> => {
         throw new Error('boom');
@@ -361,8 +422,13 @@ describe('useEffectState: reload and setData', () => {
       status: 'success',
       data: 'recovered',
       error: undefined,
-      isRunning: false
+      isRunning: false,
+      isPlaceholderData: false
     });
+
+    const before = result.current;
+    act(() => result.current.setData('recovered'));
+    expect(result.current).toBe(before);
   });
 });
 
@@ -377,7 +443,8 @@ describe('useEffectState: options', () => {
       status: 'idle',
       data: undefined,
       error: undefined,
-      isRunning: false
+      isRunning: false,
+      isPlaceholderData: false
     });
     expect(task).not.toHaveBeenCalled();
 
@@ -385,6 +452,20 @@ describe('useEffectState: options', () => {
     expect(result.current.status).toBe('pending');
     expect(result.current.isRunning).toBe(true);
 
+    await flush();
+    expect(result.current.status).toBe('success');
+    expect(task).toHaveBeenCalledTimes(1);
+  });
+
+  it('coerces enabled with Boolean() (for JavaScript callers)', async () => {
+    const task = vi.fn(async () => 'ok');
+    const { result, rerender } = renderHook(
+      ({ enabled }) => useEffectState(task, [], { enabled: enabled as unknown as boolean }),
+      { initialProps: { enabled: 0 as unknown } }
+    );
+    expect(result.current.status).toBe('idle');
+
+    rerender({ enabled: 'yes' });
     await flush();
     expect(result.current.status).toBe('success');
     expect(task).toHaveBeenCalledTimes(1);
@@ -420,7 +501,8 @@ describe('useEffectState: options', () => {
       status: 'success',
       data: 'first',
       error: undefined,
-      isRunning: false
+      isRunning: false,
+      isPlaceholderData: false
     });
   });
 
@@ -442,7 +524,7 @@ describe('useEffectState: options', () => {
     expect(result.current.isRunning).toBe(false);
   });
 
-  it('deps changes while disabled reset data to initialData', async () => {
+  it('deps changes while disabled reset data to the placeholder', async () => {
     const { result, rerender } = renderHook(
       ({ id, enabled }) => useEffectState(async () => `user-${id}`, [id], { enabled }),
       { initialProps: { id: 1, enabled: true } }
@@ -455,229 +537,167 @@ describe('useEffectState: options', () => {
       status: 'idle',
       data: undefined,
       error: undefined,
-      isRunning: false
+      isRunning: false,
+      isPlaceholderData: false
     });
   });
 
-  it('initialData is used before the first success and after deps change', async () => {
-    const init = vi.fn(() => ['initial']);
+  it('placeholderData is captured for each new set of deps', async () => {
+    const placeholders: Record<number, string> = { 1: 'cached-1', 2: 'cached-2' };
     const { result, rerender } = renderHook(
-      ({ id }) => useEffectState(async () => [`item-${id}`], [id], { initialData: init }),
+      ({ id }) =>
+        useEffectState(async () => `fresh-${id}`, [id], { placeholderData: placeholders[id]! }),
       { initialProps: { id: 1 } }
     );
 
-    expect(result.current.status).toBe('pending');
-    expect(result.current.data).toEqual(['initial']);
+    expect(snapshot(result.current)).toEqual({
+      status: 'pending',
+      data: 'cached-1',
+      error: undefined,
+      isRunning: true,
+      isPlaceholderData: true
+    });
     await flush();
-    expect(result.current.data).toEqual(['item-1']);
+    expect(snapshot(result.current)).toEqual({
+      status: 'success',
+      data: 'fresh-1',
+      error: undefined,
+      isRunning: false,
+      isPlaceholderData: false
+    });
 
     rerender({ id: 2 });
-    expect(result.current.status).toBe('pending');
-    expect(result.current.data).toEqual(['initial']);
+    expect(snapshot(result.current)).toEqual({
+      status: 'pending',
+      data: 'cached-2', // not the placeholder captured on mount
+      error: undefined,
+      isRunning: true,
+      isPlaceholderData: true
+    });
     await flush();
-    expect(result.current.data).toEqual(['item-2']);
-    expect(init).toHaveBeenCalledTimes(1);
+    expect(result.current.data).toBe('fresh-2');
   });
 
-  it('keepPreviousData keeps the previous data while new deps are pending', async () => {
+  it('keepPreviousData keeps the data on screen while new deps are pending', async () => {
     const { result, rerender } = renderHook(
-      ({ page }) => useEffectState(async () => [page], [page], { keepPreviousData: true }),
+      ({ page }) =>
+        useEffectState(async () => [page], [page], { placeholderData: [], keepPreviousData: true }),
       { initialProps: { page: 1 } }
     );
 
+    expect(snapshot(result.current)).toMatchObject({ data: [], isPlaceholderData: true });
     await flush();
     rerender({ page: 2 });
     expect(snapshot(result.current)).toEqual({
       status: 'pending',
       data: [1],
       error: undefined,
-      isRunning: true
+      isRunning: true,
+      isPlaceholderData: true
     });
 
     await flush();
-    expect(result.current.data).toEqual([2]);
+    expect(snapshot(result.current)).toEqual({
+      status: 'success',
+      data: [2],
+      error: undefined,
+      isRunning: false,
+      isPlaceholderData: false
+    });
   });
 
-  it('keepPreviousData does not keep data when the deps change also disables the hook', async () => {
+  it('keepPreviousData never carries data into idle', async () => {
+    const gateFor = gates<string[]>();
     const { result, rerender } = renderHook(
-      ({ query }) =>
-        useEffectState(async () => [`${query}-result`], [query], {
-          enabled: query.length > 0,
-          initialData: [] as string[],
+      ({ query, enabled }) =>
+        useEffectState(() => gateFor(query.length).promise, [query], {
+          enabled,
+          placeholderData: [] as string[],
           keepPreviousData: true
         }),
-      { initialProps: { query: 'ab' } }
+      { initialProps: { query: 'ab', enabled: true } }
     );
 
-    await flush();
+    await act(async () => gateFor(2).resolve(['ab-result']));
     expect(result.current.data).toEqual(['ab-result']);
 
-    rerender({ query: '' });
+    // A deps change that also disables the hook: back to the placeholder.
+    rerender({ query: '', enabled: false });
     expect(snapshot(result.current)).toEqual({
       status: 'idle',
       data: [],
       error: undefined,
-      isRunning: false
+      isRunning: false,
+      isPlaceholderData: true
     });
-  });
 
-  it('calls onSuccess and onError with the latest callbacks, only for the current run', async () => {
-    const firstSuccess = vi.fn();
-    const latestSuccess = vi.fn();
-    const onError = vi.fn();
-    const gate = deferred<number>();
-    let fail = false;
-
-    const { result, rerender } = renderHook(
-      ({ onSuccess }) =>
-        useEffectState(
-          () => {
-            if (fail) return Promise.reject(new Error('failed'));
-            return gate.promise;
-          },
-          [],
-          { onSuccess, onError }
-        ),
-      { initialProps: { onSuccess: firstSuccess } }
-    );
-
-    rerender({ onSuccess: latestSuccess });
-    await act(async () => gate.resolve(7));
-    expect(firstSuccess).not.toHaveBeenCalled();
-    expect(latestSuccess).toHaveBeenCalledWith(7);
-
-    fail = true;
-    act(() => result.current.reload());
-    await flush();
-    expect(onError).toHaveBeenCalledTimes(1);
-    expect((onError.mock.calls[0]?.[0] as Error).message).toBe('failed');
-  });
-
-  it('does not log task errors, but reports failing callbacks', async () => {
-    const { error } = captureConsole();
-    const { result } = renderHook(() =>
-      useEffectState(
-        async (): Promise<number> => {
-          throw new Error('stored, not logged');
-        },
-        [],
-        {
-          onError: () => {
-            throw new Error('onError failed');
-          }
-        }
-      )
-    );
-    const { result: successful } = renderHook(() =>
-      useEffectState(async () => 1, [], {
-        onSuccess: () => {
-          throw new Error('onSuccess failed');
-        },
-        debugName: 'Probe'
-      })
-    );
-
-    await flush();
-
-    expect(result.current.status).toBe('error');
-    expect(successful.current.status).toBe('success');
-    const messages = error.mock.calls.map((call) => (call[1] as Error).message);
-    expect(messages).toEqual(['onError failed', 'onSuccess failed']);
-    expect(error.mock.calls[1]?.[0]).toContain('(Probe)');
+    // Disabled with the same deps while pending with kept data: back to the placeholder.
+    rerender({ query: 'abc', enabled: true });
+    await act(async () => gateFor(3).resolve(['abc-result']));
+    rerender({ query: 'abcd', enabled: true });
+    expect(snapshot(result.current)).toMatchObject({
+      status: 'pending',
+      data: ['abc-result'],
+      isPlaceholderData: true
+    });
+    rerender({ query: 'abcd', enabled: false });
+    expect(snapshot(result.current)).toEqual({
+      status: 'idle',
+      data: [],
+      error: undefined,
+      isRunning: false,
+      isPlaceholderData: true
+    });
   });
 });
 
 describe('useEffectState: races and robustness', () => {
-  it('reload() aborts the run in flight immediately, and its late result never lands', async () => {
-    const first = deferred<string>();
-    const onSuccess = vi.fn();
-    const scopes: EffectTaskScope[] = [];
-    const { result } = renderHook(() =>
-      useEffectState(
-        (scope) => {
-          scopes.push(scope);
-          return scopes.length === 1 ? first.promise : new Promise<string>(() => undefined);
-        },
-        [],
-        { onSuccess }
-      )
-    );
+  it('never lets a stale outcome land between the commit and the effect cleanup', async () => {
+    await withoutAct(async () => {
+      const gateFor = gates<string>();
+      const seen: string[] = [];
 
-    act(() => {
-      result.current.reload();
-      // Synchronously, before React even re-rendered.
-      expect(scopes[0]?.signal.aborted).toBe(true);
+      // Resolves the previous run's promise during the commit (layout phase), so
+      // its outcome arrives before the passive cleanup disposes that run.
+      function ResolveAtCommit({ previousId }: { previousId: number }) {
+        useLayoutEffect(() => {
+          gateFor(previousId).resolve(`stale-${previousId}`);
+        }, [previousId]);
+        return null;
+      }
+
+      function Demo({ id, enabled, previousId }: { id: number; enabled: boolean; previousId?: number }) {
+        const state = useEffectState(() => gateFor(id).promise, [id], { enabled });
+        seen.push(`${id}:${state.status}:${String(state.data)}`);
+        return previousId === undefined ? null : <ResolveAtCommit previousId={previousId} />;
+      }
+
+      const root = createRoot(document.createElement('div'));
+      try {
+        root.render(<Demo id={1} enabled />);
+        await wait(30);
+
+        root.render(<Demo id={2} enabled previousId={1} />); // default priority
+        await wait(30);
+        gateFor(2).resolve('two');
+        await wait(30);
+        expect(seen[seen.length - 1]).toBe('2:success:two');
+
+        root.render(<Demo id={3} enabled />);
+        await wait(30);
+        root.render(<Demo id={3} enabled={false} previousId={3} />);
+        await wait(30);
+        expect(seen[seen.length - 1]).toBe('3:idle:undefined');
+
+        expect(seen.some((entry) => entry.includes('stale'))).toBe(false);
+      } finally {
+        flushSync(() => root.unmount());
+      }
     });
-
-    await act(async () => first.resolve('stale'));
-    expect(onSuccess).not.toHaveBeenCalled();
-    expect(result.current.isRunning).toBe(true);
-    expect(result.current.data).toBeUndefined();
-  });
-
-  it('ignores a stale outcome that lands between the commit and the effect cleanup', async () => {
-    // Outside act(), a default-priority update commits in one task and runs its
-    // passive effects (which dispose the old run) in a later one. A result that
-    // arrives in between must not land.
-    const actGlobal = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
-    const previousActEnvironment = actGlobal.IS_REACT_ACT_ENVIRONMENT;
-    actGlobal.IS_REACT_ACT_ENVIRONMENT = false;
-
-    const gates = new Map<number, ReturnType<typeof deferred<string>>>();
-    const gateFor = (id: number) => {
-      if (!gates.has(id)) gates.set(id, deferred<string>());
-      return gates.get(id)!;
-    };
-    const onSuccess = vi.fn();
-    const seen: string[] = [];
-
-    // Resolves the previous run's promise during the commit (layout phase).
-    function ResolveAtCommit({ previousId }: { previousId: number }) {
-      useLayoutEffect(() => {
-        gateFor(previousId).resolve(`stale-${previousId}`);
-      }, [previousId]);
-      return null;
-    }
-
-    function Demo({ id, enabled, previousId }: { id: number; enabled: boolean; previousId?: number }) {
-      const state = useEffectState(() => gateFor(id).promise, [id], { onSuccess, enabled });
-      seen.push(`${id}:${state.status}:${String(state.data)}`);
-      return previousId === undefined ? null : <ResolveAtCommit previousId={previousId} />;
-    }
-
-    const container = document.createElement('div');
-    const root = createRoot(container);
-    try {
-      root.render(<Demo id={1} enabled />);
-      await wait(30); // committed, and run 1 started
-
-      root.render(<Demo id={2} enabled previousId={1} />); // default priority
-      await wait(30);
-      expect(onSuccess).not.toHaveBeenCalled();
-
-      gateFor(2).resolve('two');
-      await wait(30);
-      expect(onSuccess.mock.calls).toEqual([['two']]);
-
-      // Same for enabled: false.
-      root.render(<Demo id={3} enabled />);
-      await wait(30);
-      root.render(<Demo id={3} enabled={false} previousId={3} />);
-      await wait(30);
-      expect(onSuccess.mock.calls).toEqual([['two']]);
-      expect(seen[seen.length - 1]).toBe('3:idle:undefined');
-    } finally {
-      flushSync(() => root.unmount());
-      actGlobal.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
-    }
   });
 
   it('keeps a setData() made by a child effect in the commit that changed deps', async () => {
-    const gates = new Map<number, ReturnType<typeof deferred<string>>>();
-    const gateFor = (id: number) => {
-      if (!gates.has(id)) gates.set(id, deferred<string>());
-      return gates.get(id)!;
-    };
+    const gateFor = gates<string>();
     let latest: { status: string; data: string | undefined; isRunning: boolean } | undefined;
 
     function Child({ id, setData }: { id: number; setData: SetEffectStateData<string> }) {
@@ -705,66 +725,42 @@ describe('useEffectState: races and robustness', () => {
     expect(latest).toEqual({ status: 'success', data: 'two', isRunning: false });
   });
 
-  it('does not render-loop when a dep is recreated on every render, and warns once', async () => {
-    // Outside act() so that a regression shows up as a failing count, not a hang.
-    const actGlobal = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
-    const previousActEnvironment = actGlobal.IS_REACT_ACT_ENVIRONMENT;
-    actGlobal.IS_REACT_ACT_ENVIRONMENT = false;
-    const { warn } = captureConsole();
-    let renders = 0;
+  it('fails fast when a dependency is recreated on every render', async () => {
+    captureConsole(); // React reports the error caught by the boundary
+    const caught: unknown[] = [];
     let runs = 0;
 
     function Demo({ id, tick }: { id: number; tick: number }) {
-      renders += 1;
       const filter = { id }; // a new object on every render (a common mistake)
-      const state = useEffectState(
-        () => {
-          runs += 1;
-          return new Promise<number>(() => undefined);
-        },
-        [filter],
-        { debugName: 'Filters' }
-      );
+      const state = useEffectState(() => {
+        runs += 1;
+        return new Promise<number>(() => undefined);
+      }, [filter]);
       return <div>{`${state.status}:${tick}`}</div>;
     }
 
-    const root = createRoot(document.createElement('div'));
-    try {
-      root.render(<Demo id={1} tick={0} />);
-      await wait(50);
-      expect(renders).toBeLessThanOrEqual(3);
-
-      for (let tick = 1; tick <= 4; tick += 1) {
-        root.render(<Demo id={1} tick={tick} />);
-        await wait(10);
-      }
-      await wait(50);
-
-      expect(renders).toBeLessThanOrEqual(12);
-      expect(runs).toBe(5);
-      expect(warn).toHaveBeenCalledTimes(1);
-      expect(String(warn.mock.calls[0]?.[0])).toContain('useEffectState (Filters)');
-    } finally {
-      flushSync(() => root.unmount());
-      actGlobal.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
-    }
-  });
-
-  it('does not warn about deps that really change', async () => {
-    const { warn } = captureConsole();
-    const { rerender } = renderHook(({ id }) => useEffectState(async () => id, [{ id }.id]), {
-      initialProps: { id: 1 }
-    });
-    for (let id = 2; id <= 6; id += 1) {
-      rerender({ id });
-    }
+    const onError = (error: unknown) => caught.push(error);
+    const { rerender } = render(
+      <ErrorBoundary onError={onError}>
+        <Demo id={1} tick={0} />
+      </ErrorBoundary>
+    );
+    rerender(
+      <ErrorBoundary onError={onError}>
+        <Demo id={1} tick={1} />
+      </ErrorBoundary>
+    );
     await flush();
-    expect(warn).not.toHaveBeenCalled();
+
+    expect(caught.length).toBe(1);
+    expect(String((caught[0] as Error).message)).toMatch(/Too many re-renders/);
+    expect(runs).toBeLessThanOrEqual(2);
+    expect(screen.getByText('boundary-fallback')).toBeTruthy();
   });
 });
 
 describe('useEffectState: React integration', () => {
-  it('works under StrictMode and aborts the discarded run', async () => {
+  it('works under StrictMode and drops the discarded run', async () => {
     const signals: AbortSignal[] = [];
 
     function Demo() {
@@ -786,6 +782,27 @@ describe('useEffectState: React integration', () => {
     expect(signals[0]?.aborted).toBe(true);
     expect(signals[1]?.aborted).toBe(false);
     expect(screen.getByTestId('state').textContent).toBe('success:2');
+  });
+
+  it('hydrates server HTML without mismatches', async () => {
+    const { error: consoleError } = captureConsole();
+
+    function Page() {
+      const state = useEffectState(async () => 'client data', [], { placeholderData: 'placeholder' });
+      return <p>{`${state.status}:${state.data}`}</p>;
+    }
+
+    const container = document.createElement('div');
+    container.innerHTML = renderToString(<Page />);
+    expect(container.textContent).toBe('pending:placeholder');
+
+    await act(async () => {
+      hydrateRoot(container, <Page />);
+    });
+    await flush();
+
+    expect(container.textContent).toBe('success:client data');
+    expect(consoleError).not.toHaveBeenCalled();
   });
 
   it('debounces with sleep', async () => {

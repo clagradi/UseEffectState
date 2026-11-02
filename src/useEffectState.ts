@@ -1,36 +1,18 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { depsEqual } from './internal/deps';
 import { useCommitPhaseEffect } from './internal/environment';
 import { reportError } from './internal/errors';
-import { createUnstableDepsDetector, depsEqual } from './internal/deps';
 import { createRun, isPromiseLike } from './internal/run';
-import type { Run } from './internal/run';
 import type { DependencyList, EffectTaskScope } from './types';
-import { useEvent } from './useEvent';
 
 export type EffectStateStatus = 'idle' | 'pending' | 'success' | 'error';
 
 /**
  * The function run by `useEffectState`: its return value (or resolved value)
- * becomes `data`. The scope is the same as `useEffectTask`'s; it deliberately
- * does not depend on `T`, so TypeScript infers `T` from the return type even
- * when the task destructures its argument.
+ * becomes `data`. The scope deliberately does not depend on `T`, so TypeScript
+ * infers `T` from the return type even when the task destructures its scope.
  */
 export type EffectStateTask<T> = (scope: EffectTaskScope) => T | PromiseLike<T>;
-
-export interface UseEffectStateOptions<T> {
-  /** When `false`, the task does not run. Defaults to `true`. */
-  enabled?: boolean | undefined;
-  /** `data` until the first successful run (and after deps change, unless `keepPreviousData`). */
-  initialData?: T | (() => T) | undefined;
-  /** Keep showing the previous `data` while the task runs for new deps. Defaults to `false`. */
-  keepPreviousData?: boolean | undefined;
-  /** Called after a run succeeds (only for the current run). */
-  onSuccess?: ((data: T) => void) | undefined;
-  /** Called after a run fails (only for the current run). The error is also stored in state. */
-  onError?: ((error: unknown) => void) | undefined;
-  /** Label for this hook in console messages (for example when a callback throws). */
-  debugName?: string | undefined;
-}
 
 /**
  * Blocks inference from a position, so `T` is inferred from the task's return
@@ -38,182 +20,163 @@ export interface UseEffectStateOptions<T> {
  */
 type NoInferFrom<T> = [T][T extends unknown ? 0 : never];
 
-export type SetEffectStateData<T, TFallback = T | undefined> = (
-  value: T | ((previous: T | TFallback) => T)
-) => void;
-
-interface EffectStateControls<T, TFallback> {
-  /** `true` while a run is in flight (first run, deps change or `reload()`). */
-  readonly isRunning: boolean;
-  /** Aborts the current run (if any) and runs the task again with the same deps. */
-  readonly reload: () => void;
-  /** Replaces `data` locally (for example an optimistic update). Sets status to `'success'`. */
-  readonly setData: SetEffectStateData<T, TFallback>;
+export interface UseEffectStateOptions<T> {
+  /**
+   * When `false`, the task does not run: a run in flight is aborted, `reload()`
+   * does nothing and `pending` becomes `idle`. Defaults to `true`; any other
+   * value goes through `Boolean()`, so `enabled: items.length` is safe.
+   */
+  enabled?: boolean | undefined;
+  /**
+   * `data` while there is no outcome for the current deps (status `pending` or
+   * `idle`). Captured when the hook enters new deps (mount and every deps
+   * change), so a value derived from props stays right for the deps it belongs
+   * to. With it, `data` is typed `T` instead of `T | undefined`.
+   */
+  placeholderData?: NoInferFrom<T> | undefined;
+  /**
+   * When deps change, keep the data on screen (marked `isPlaceholderData`)
+   * until the run for the new deps settles, instead of switching to
+   * `placeholderData`. Never carries data into `idle`. Defaults to `false`.
+   */
+  keepPreviousData?: boolean | undefined;
 }
 
-export type EffectState<T, TFallback = T | undefined> = EffectStateControls<T, TFallback> &
+export type SetEffectStateData<T, TData = T | undefined> = (
+  value: T | ((previous: TData) => T)
+) => void;
+
+interface EffectStateControls<T, TData> {
+  /**
+   * Runs the task again with the same deps: the run in flight is aborted at the
+   * next commit and `isRunning` stays `true` until the new run settles. Keeps
+   * `status`, `data` and `error`. Does nothing while disabled. Do not call it
+   * during render.
+   */
+  readonly reload: () => void;
+  /**
+   * Replaces `data` locally (for example an optimistic update): status becomes
+   * `'success'`. Does not stop a run in flight, whose outcome replaces the
+   * value when it settles; pause runs with `enabled` while saving.
+   */
+  readonly setData: SetEffectStateData<T, TData>;
+}
+
+/**
+ * The state returned by `useEffectState`, narrowed by `status`. `TData` is the
+ * type of `data` when there is no outcome for the current deps: `T | undefined`,
+ * or `T` with a `placeholderData`.
+ */
+export type EffectState<T, TData = T | undefined> = EffectStateControls<T, TData> &
   (
     | {
         readonly status: 'idle';
-        readonly data: TFallback;
+        readonly data: TData;
         readonly error: undefined;
-        readonly isPending: false;
-        readonly isSuccess: false;
-        readonly isError: false;
+        readonly isRunning: false;
+        readonly isPlaceholderData: boolean;
       }
     | {
         readonly status: 'pending';
-        readonly data: TFallback;
+        readonly data: TData;
         readonly error: undefined;
-        readonly isPending: true;
-        readonly isSuccess: false;
-        readonly isError: false;
+        readonly isRunning: true;
+        readonly isPlaceholderData: boolean;
       }
     | {
         readonly status: 'success';
         readonly data: T;
         readonly error: undefined;
-        readonly isPending: false;
-        readonly isSuccess: true;
-        readonly isError: false;
+        readonly isRunning: boolean;
+        readonly isPlaceholderData: false;
       }
     | {
         readonly status: 'error';
-        readonly data: TFallback;
+        readonly data: TData;
         readonly error: unknown;
-        readonly isPending: false;
-        readonly isSuccess: false;
-        readonly isError: true;
+        readonly isRunning: boolean;
+        readonly isPlaceholderData: boolean;
       }
   );
 
-interface Snapshot<T> {
-  status: EffectStateStatus;
-  data: T | undefined;
-  error: unknown;
-  isRunning: boolean;
-  /**
-   * Deps the visible state belongs to. Recorded together with a visible change
-   * or when a run settles, never on its own: a deps array that is a new object
-   * on every render must not be able to re-render the hook by itself.
-   */
-  deps: DependencyList;
-  /** `enabled` when `deps` was recorded. */
-  enabled: boolean;
+/** What one render asks for. */
+interface Slot<T> {
+  readonly deps: DependencyList;
+  readonly enabled: boolean;
+  readonly keep: boolean;
+  readonly placeholder: T | undefined;
+}
+
+interface State<T> {
+  /** The deps and `enabled` this state belongs to. */
+  readonly deps: DependencyList;
+  readonly enabled: boolean;
+  readonly status: EffectStateStatus;
+  readonly data: T | undefined;
+  readonly error: unknown;
+  /** `data` is a stand-in (placeholder or other deps' data), not an outcome for `deps`. */
+  readonly placeholder: boolean;
+  /** A run whose outcome will be applied is in flight (or starts in this commit). */
+  readonly running: boolean;
   /** Incremented by `reload()`; part of the effect's dependencies. */
-  reloads: number;
-  /** `initialData`, resolved once on mount; `data` falls back to it on deps change. */
-  initial: T | undefined;
+  readonly reloads: number;
 }
 
-/** What the latest render asks for. */
-interface Target {
-  deps: DependencyList;
-  enabled: boolean;
-  keep: boolean;
-}
+/** Brings `state` to what `slot` asks for. Pure; returns `state` itself when nothing changes. */
+function adopt<T>(state: State<T>, slot: Slot<T>): State<T> {
+  if (depsEqual(state.deps, slot.deps)) {
+    if (state.enabled === slot.enabled) {
+      return state;
+    }
 
-type Action<T> =
-  | ({ type: 'sync' } & Target)
-  | { type: 'success'; data: T; deps: DependencyList }
-  | { type: 'failure'; error: unknown; deps: DependencyList }
-  | { type: 'set'; value: T | ((previous: T | undefined) => T); target: Target }
-  | { type: 'reload' };
+    if (slot.enabled) {
+      return {
+        ...state,
+        enabled: true,
+        running: true,
+        status: state.status === 'idle' ? 'pending' : state.status
+      };
+    }
 
-/** The state once the effect for `target` has started (enabled) or stopped (disabled) a run. */
-function synced<T>(state: Snapshot<T>, target: Target): Snapshot<T> {
-  const fresh = !depsEqual(state.deps, target.deps);
-  // keepPreviousData bridges the wait for a new run; without a run (the deps
-  // change also disabled the hook) the old data would stay forever.
-  const data = fresh && !(target.keep && target.enabled) ? state.initial : state.data;
-  let status: EffectStateStatus = fresh ? 'pending' : state.status;
-
-  if (target.enabled) {
-    status = status === 'idle' ? 'pending' : status;
-  } else {
-    status = status === 'pending' ? 'idle' : status;
+    // Disabled with the same deps: an outcome is kept, anything else falls back
+    // to the placeholder (kept data never shows under 'idle').
+    return state.status === 'pending'
+      ? {
+          ...state,
+          enabled: false,
+          running: false,
+          status: 'idle',
+          data: slot.placeholder,
+          placeholder: slot.placeholder !== undefined
+        }
+      : { ...state, enabled: false, running: false };
   }
+
+  const data =
+    slot.enabled && slot.keep && state.data !== undefined ? state.data : slot.placeholder;
 
   return {
-    ...state,
-    status,
+    deps: slot.deps,
+    enabled: slot.enabled,
+    status: slot.enabled ? 'pending' : 'idle',
     data,
-    error: fresh ? undefined : state.error,
-    isRunning: target.enabled,
-    deps: target.deps,
-    enabled: target.enabled
+    error: undefined,
+    placeholder: data !== undefined,
+    running: slot.enabled,
+    reloads: state.reloads
   };
-}
-
-function sameVisibleState<T>(a: Snapshot<T>, b: Snapshot<T>): boolean {
-  return (
-    a.status === b.status &&
-    Object.is(a.data, b.data) &&
-    Object.is(a.error, b.error) &&
-    a.isRunning === b.isRunning
-  );
-}
-
-function reducer<T>(state: Snapshot<T>, action: Action<T>): Snapshot<T> {
-  switch (action.type) {
-    case 'sync': {
-      const next = synced(state, action);
-      return sameVisibleState(next, state) ? state : next;
-    }
-    case 'success':
-      return {
-        ...state,
-        status: 'success',
-        data: action.data,
-        error: undefined,
-        isRunning: false,
-        deps: action.deps,
-        enabled: true
-      };
-    case 'failure':
-      return {
-        ...state,
-        status: 'error',
-        error: action.error,
-        isRunning: false,
-        deps: action.deps,
-        enabled: true
-      };
-    case 'set': {
-      // setData() can run before the effect that syncs new deps (for example
-      // from a child's effect in the same commit): apply it to the new deps.
-      const base =
-        state.enabled === action.target.enabled && depsEqual(state.deps, action.target.deps)
-          ? state
-          : synced(state, action.target);
-      const value =
-        typeof action.value === 'function'
-          ? (action.value as (previous: T | undefined) => T)(base.data)
-          : action.value;
-
-      if (base === state && state.status === 'success' && Object.is(value, state.data)) {
-        return state;
-      }
-
-      return { ...base, status: 'success', data: value, error: undefined };
-    }
-    case 'reload':
-      return { ...state, isRunning: true, reloads: state.reloads + 1 };
-  }
-}
-
-function resolveInitial<T>(initialData: T | (() => T) | undefined): T | undefined {
-  return typeof initialData === 'function' ? (initialData as () => T)() : initialData;
 }
 
 /**
  * Runs an async task as an effect and keeps its result in state.
  *
- * Same run semantics as `useEffectTask` (per-run AbortSignal, cleanups,
- * stale results ignored), plus `status`, `data`, `error`, `isRunning`,
- * `reload()` and `setData()`. When `deps` change, the hook reports
- * `'pending'` in that very render, so old data is never shown as the result
- * for new deps.
+ * Same run semantics as `useEffectTask` (per-run AbortSignal, LIFO cleanups,
+ * stale outcomes ignored), plus `status`, `data`, `error`, `isRunning`,
+ * `isPlaceholderData`, `reload()` and `setData()`. When `deps` change, the
+ * hook is `pending` in that very render, so a previous result is never shown
+ * as the result for new deps. Deps are compared with `Object.is` like
+ * `useEffect`'s: a dependency recreated on every render makes React stop with
+ * "Too many re-renders".
  *
  * @example
  * const user = useEffectState(async ({ signal }) => {
@@ -224,159 +187,140 @@ function resolveInitial<T>(initialData: T | (() => T) | undefined): T | undefine
 export function useEffectState<T>(
   task: EffectStateTask<T>,
   deps: DependencyList,
-  options: UseEffectStateOptions<NoInferFrom<T>> & {
-    initialData: NoInferFrom<T> | (() => NoInferFrom<T>);
+  options: Omit<UseEffectStateOptions<T>, 'placeholderData'> & {
+    placeholderData: NoInferFrom<T>;
   }
 ): EffectState<T, T>;
 export function useEffectState<T>(
   task: EffectStateTask<T>,
   deps: DependencyList,
-  options?: UseEffectStateOptions<NoInferFrom<T>>
+  options?: UseEffectStateOptions<T>
 ): EffectState<T>;
 export function useEffectState<T>(
   task: EffectStateTask<T>,
   deps: DependencyList,
   options?: UseEffectStateOptions<T>
 ): EffectState<T> {
-  const enabled = options?.enabled !== false;
-  const keep = options?.keepPreviousData === true;
+  const enabled = options?.enabled === undefined ? true : Boolean(options.enabled);
+  const slot: Slot<T> = {
+    deps,
+    enabled,
+    keep: options?.keepPreviousData === true,
+    placeholder: options?.placeholderData as T | undefined
+  };
 
-  const runTask = useEvent(task);
-  const optionsRef = useRef(options);
-  const runIdRef = useRef(0);
   // What the latest *committed* render asks for (never a discarded render).
-  const committedRef = useRef<Target>({ deps, enabled, keep });
-  const currentRunRef = useRef<Run | null>(null);
-  const [detectUnstableDeps] = useState(() => createUnstableDepsDetector('useEffectState'));
+  const committedRef = useRef(slot);
+  const runIdRef = useRef(0);
 
   useCommitPhaseEffect(() => {
-    optionsRef.current = options;
-    committedRef.current = { deps, enabled, keep };
+    committedRef.current = slot;
   });
 
-  const [state, dispatch] = useReducer(
-    reducer as (state: Snapshot<T>, action: Action<T>) => Snapshot<T>,
-    undefined,
-    (): Snapshot<T> => {
-      const initial = resolveInitial(options?.initialData);
-      return {
-        status: enabled ? 'pending' : 'idle',
-        data: initial,
-        error: undefined,
-        isRunning: enabled,
-        deps,
-        enabled,
-        reloads: 0,
-        initial
-      };
-    }
-  );
+  const [state, setState] = useState<State<T>>(() => ({
+    deps,
+    enabled,
+    status: enabled ? 'pending' : 'idle',
+    data: slot.placeholder,
+    error: undefined,
+    placeholder: slot.placeholder !== undefined,
+    running: enabled,
+    reloads: 0
+  }));
 
-  // Render-time derivation: if this render's deps/enabled differ from the
-  // snapshot's, the effect below is about to start (or stop) a run. Report that
-  // now, so a render never shows a previous result as if it belonged to new deps.
-  const view =
-    state.enabled !== enabled || !depsEqual(state.deps, deps)
-      ? reducer(state, { type: 'sync', deps, enabled, keep })
-      : state;
+  // Render-time sync, React's documented "adjusting state when a prop changes"
+  // pattern: React re-renders right away with the adopted state and discards
+  // the update together with this render if the render itself is discarded.
+  // So no frame ever shows an outcome that belongs to other deps.
+  let view = state;
+  if (state.enabled !== enabled || !depsEqual(state.deps, deps)) {
+    view = adopt(state, slot);
+    setState(view);
+  }
+
+  const reloads = view.reloads;
 
   useEffect(() => {
-    // Commit what the render derived (a no-op unless something visible changes).
-    dispatch({ type: 'sync', deps, enabled, keep });
-
     if (!enabled) {
       return undefined;
     }
 
-    detectUnstableDeps(deps, optionsRef.current?.debugName);
+    // A no-op (React bails out) unless this is a restart with the same deps:
+    // StrictMode's second mount or an <Activity> reveal.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setState((current) => {
+      const next = adopt(current, slot);
+      return next.running ? next : { ...next, running: true };
+    });
 
-    const report = (what: string, error: unknown, onError?: (error: unknown) => void): void => {
-      reportError(error, `useEffectState ${what}`, optionsRef.current?.debugName, onError);
-    };
+    const run = createRun(++runIdRef.current, (error) => {
+      reportError(error, 'useEffectState cleanup failed', undefined, undefined);
+    });
 
-    const run = createRun(++runIdRef.current, (error) => report('cleanup failed', error));
-    currentRunRef.current = run;
-
-    // A run counts while it is not disposed and the latest committed render
-    // still asks for it: between a commit with new deps (or enabled: false) and
-    // the cleanup that disposes this run, its outcome must not land.
-    const isCurrent = (): boolean => {
+    // An outcome counts only while the run is active and the latest committed
+    // render still asks for it: between a commit with new deps (or enabled:
+    // false) and the cleanup that disposes this run, it must not land.
+    const settle = (ok: boolean, value: unknown): void => {
       const committed = committedRef.current;
-      return run.isActive() && committed.enabled && depsEqual(committed.deps, deps);
-    };
-
-    const succeed = (data: T): void => {
-      if (!isCurrent()) {
+      if (!run.isActive() || !committed.enabled || !depsEqual(committed.deps, deps)) {
         return;
       }
 
-      dispatch({ type: 'success', data, deps });
-
-      const onSuccess = optionsRef.current?.onSuccess;
-      if (onSuccess) {
-        try {
-          onSuccess(data);
-        } catch (error) {
-          report('onSuccess failed', error);
-        }
-      }
-    };
-
-    const fail = (error: unknown): void => {
-      // The run's own signal is only aborted after the run became inactive, so
-      // this already ignores every cancellation caused by the hook. An abort from
-      // another source (for example the task's own timeout controller) settles
-      // the task, so it must become an error instead of leaving `isRunning` stuck.
-      if (!isCurrent()) {
-        return;
-      }
-
-      dispatch({ type: 'failure', error, deps });
-
-      const onError = optionsRef.current?.onError;
-      if (onError) {
-        try {
-          onError(error);
-        } catch (handlerError) {
-          report('onError failed', handlerError);
-        }
-      }
+      setState((current) => {
+        const next = adopt(current, committed);
+        // A reload() issued while this run was in flight restarts it next commit.
+        const running = next.reloads !== reloads;
+        return ok
+          ? { ...next, status: 'success', data: value as T, error: undefined, placeholder: false, running }
+          : { ...next, status: 'error', error: value, running };
+      });
     };
 
     try {
-      const output = runTask(run.scope);
+      const output = task(run.scope);
 
       if (isPromiseLike<T>(output)) {
-        Promise.resolve(output).then(succeed, fail);
+        Promise.resolve(output).then(
+          (value) => settle(true, value),
+          (error: unknown) => settle(false, error)
+        );
       } else {
-        succeed(output);
+        settle(true, output);
       }
     } catch (error) {
-      fail(error);
+      settle(false, error);
     }
 
-    return () => {
-      if (currentRunRef.current === run) {
-        currentRunRef.current = null;
-      }
-      run.dispose();
-    };
-    // `deps` are the caller's; the task and callbacks are read through refs.
+    return run.dispose;
+    // React stores the latest committed effect callback, so `task` is always the
+    // committed one; `deps` are the caller's.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [...deps, enabled, state.reloads]);
+  }, [...deps, enabled, reloads]);
 
-  const reload = useCallback(() => {
-    if (!committedRef.current.enabled) {
-      return;
+  // Stable for the lifetime of the component (state is never discarded).
+  const [actions] = useState(() => ({
+    reload: (): void => {
+      const committed = committedRef.current;
+      setState((current) => {
+        const next = adopt(current, committed);
+        return next.enabled ? { ...next, running: true, reloads: next.reloads + 1 } : current;
+      });
+    },
+    setData: (value: T | ((previous: T | undefined) => T)): void => {
+      const committed = committedRef.current;
+      setState((current) => {
+        const next = adopt(current, committed);
+        const data =
+          typeof value === 'function' ? (value as (previous: T | undefined) => T)(next.data) : value;
+
+        if (next === current && current.status === 'success' && Object.is(data, current.data)) {
+          return current;
+        }
+
+        return { ...next, status: 'success', data, error: undefined, placeholder: false };
+      });
     }
-    // End the run in flight right away, so its outcome can never land.
-    currentRunRef.current?.dispose();
-    dispatch({ type: 'reload' });
-  }, []);
-
-  const setData = useCallback<SetEffectStateData<T>>((value) => {
-    dispatch({ type: 'set', value, target: committedRef.current });
-  }, []);
+  }));
 
   return useMemo(
     () =>
@@ -384,13 +328,11 @@ export function useEffectState<T>(
         status: view.status,
         data: view.data,
         error: view.error,
-        isRunning: view.isRunning,
-        isPending: view.status === 'pending',
-        isSuccess: view.status === 'success',
-        isError: view.status === 'error',
-        reload,
-        setData
+        isRunning: view.running,
+        isPlaceholderData: view.placeholder,
+        reload: actions.reload,
+        setData: actions.setData
       }) as EffectState<T>,
-    [view.status, view.data, view.error, view.isRunning, reload, setData]
+    [view.status, view.data, view.error, view.running, view.placeholder, actions]
   );
 }

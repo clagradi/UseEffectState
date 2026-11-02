@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import { useCommitPhaseEffect, useIsomorphicLayoutEffect } from './internal/environment';
-import { createUnstableDepsDetector } from './internal/deps';
 import { isAbortError, reportError } from './internal/errors';
 import { createRun, isPromiseLike } from './internal/run';
 import type { DependencyList, EffectTaskCleanup, EffectTaskScope } from './types';
@@ -49,7 +48,6 @@ function useTaskRunner(
   const optionsRef = useRef(options);
   const runIdRef = useRef(0);
   const warnedRef = useRef(false);
-  const [detectUnstableDeps] = useState(() => createUnstableDepsDetector(hookName));
 
   useCommitPhaseEffect(() => {
     optionsRef.current = options;
@@ -75,8 +73,6 @@ function useTaskRunner(
       const current = optionsRef.current;
       reportError(error, `${hookName} ${what}`, current?.debugName, current?.onError);
     };
-
-    detectUnstableDeps(deps, optionsRef.current?.debugName);
 
     const run = createRun(++runIdRef.current, (error) => report('cleanup failed', error));
 
@@ -112,9 +108,8 @@ function useTaskRunner(
  * `useEffect` for async work, done right.
  *
  * Every run gets its own `AbortSignal` (aborted on re-run and unmount), a
- * `commit()` guard against stale results, LIFO cleanups via `onCleanup()`,
- * abortable `sleep()` / `abortable()` helpers, and errors are reported instead
- * of disappearing. The latest `task` is always the one that runs, so it never
+ * `commit()` guard against stale results, LIFO cleanups via `onCleanup()`, an
+ * abortable `sleep()`, and errors are reported instead of disappearing. The latest `task` is always the one that runs, so it never
  * sees stale props or state; `deps` decide *when* it runs.
  *
  * @example

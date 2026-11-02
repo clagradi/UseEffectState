@@ -1,7 +1,7 @@
 {
   "name": "@clagradi/effect-runtime",
   "version": "0.2.0",
-  "description": "Tiny, dependency-free React hooks for async effects that cancel, clean up and race correctly: useEffectTask, useEffectState and useEvent.",
+  "description": "useEffectState and useEffectTask for React: tiny, dependency-free hooks for async effects that cancel, clean up and race correctly.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -15,9 +15,13 @@
     "react",
     "react-hooks",
     "hooks",
+    "useeffectstate",
+    "use-effect-state",
+    "useeffecttask",
     "useeffect",
     "usestate",
     "async",
+    "data-fetching",
     "abortcontroller",
     "abort",
     "cancellation",
@@ -65,7 +69,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.build.json"
   },
   "peerDependencies": {
-    "react": ">=18"
+    "react": "^18.0.0 || ^19.0.0"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",

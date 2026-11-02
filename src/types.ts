@@ -18,7 +18,10 @@ export type EffectTaskCleanup = () => void;
  * when it is disposed (deps change, reload, unmount, or the hook is disabled).
  */
 export interface EffectTaskScope {
-  /** Aborted when this run ends. Pass it to `fetch` and other abortable APIs. */
+  /**
+   * Aborted when this run ends, with an `AbortError` ("The effect run ended.")
+   * as its reason. Pass it to `fetch` and other abortable APIs.
+   */
   readonly signal: AbortSignal;
   /** Sequential id of this run within the hook instance (1, 2, 3, ...). */
   readonly runId: number;
@@ -31,19 +34,15 @@ export interface EffectTaskScope {
   readonly commit: (fn: () => void) => void;
   /**
    * Registers a cleanup for this run. Cleanups run in reverse order of
-   * registration (LIFO). Registering after the run ended runs it immediately.
+   * registration (LIFO) when the run ends; registering after the run ended runs
+   * it immediately. Returns a function that runs this cleanup early (at most
+   * once) and unregisters it, for resources released before the run ends.
    */
-  readonly onCleanup: (fn: EffectTaskCleanup) => void;
+  readonly onCleanup: (fn: EffectTaskCleanup) => () => void;
   /**
    * Resolves after `ms` milliseconds, or rejects with the abort reason as soon
    * as the run ends, which stops the task at that `await`. `await sleep(300)`
-   * at the start of a task debounces it.
+   * at the start of a task debounces it; `sleep(Infinity)` waits for the end.
    */
   readonly sleep: (ms: number) => Promise<void>;
-  /**
-   * Wraps a promise that cannot take an `AbortSignal` so that it rejects with
-   * the abort reason as soon as the run ends. The underlying work is not
-   * cancelled, but the task stops waiting for it.
-   */
-  readonly abortable: <T>(promise: PromiseLike<T>) => Promise<T>;
 }

@@ -36,26 +36,38 @@ export function abortReasonOf(signal: AbortSignal): unknown {
 
 export type ErrorHandler = (error: unknown) => void;
 
-type GlobalWithReportError = typeof globalThis & { reportError?: (error: unknown) => void };
+type Reporter = (error: unknown) => void;
+type Host = typeof globalThis & {
+  reportError?: Reporter;
+  ErrorUtils?: { reportError?: Reporter };
+};
 
 /**
  * Surfaces an error nobody handled, the way an error thrown in a plain effect
- * would surface: through the global `reportError` where it exists (browsers;
- * it reaches `window.onerror`, error monitoring and dev overlays), otherwise
- * through `console.error` with a recognisable prefix.
+ * would surface: through the global `reportError` (browsers, Deno, Bun: it
+ * reaches `window.onerror`, error monitoring and dev overlays), then React
+ * Native's `ErrorUtils.reportError` (LogBox and crash reporters), otherwise
+ * `console.error` with a recognisable prefix.
  */
 function reportUnhandled(error: unknown, prefix: string, labelled: boolean): void {
-  const runtime = globalThis as GlobalWithReportError;
+  const host = globalThis as Host;
+  const reporters: Array<[unknown, unknown]> = [
+    [host, host.reportError],
+    [host.ErrorUtils, host.ErrorUtils?.reportError]
+  ];
 
-  if (typeof runtime.reportError === 'function') {
-    try {
-      runtime.reportError(error);
-    } catch {
-      console.error(`${prefix}:`, error);
-      return;
+  for (const [receiver, report] of reporters) {
+    if (typeof report !== 'function') {
+      continue;
     }
 
-    // reportError only carries the error itself: keep an explicit debugName visible.
+    try {
+      (report as Reporter).call(receiver, error);
+    } catch {
+      continue;
+    }
+
+    // Those reporters only carry the error itself: keep an explicit debugName visible.
     if (labelled) {
       console.warn(`${prefix}:`, error);
     }
@@ -67,8 +79,8 @@ function reportUnhandled(error: unknown, prefix: string, labelled: boolean): voi
 
 /**
  * Hands an unexpected error to `onError`, or reports it as unhandled. With a
- * `debugName`, a labelled console.warn accompanies `reportError` (which only
- * carries the error). Never throws: a failing `onError` is reported instead of
+ * `debugName`, a labelled console.warn accompanies host reporters (which only
+ * carry the error). Never throws: a failing `onError` is reported instead of
  * becoming an unhandled rejection.
  */
 export function reportError(

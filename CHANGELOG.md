@@ -4,24 +4,23 @@ All notable changes to this project are documented in this file.
 
 ## [0.2.0] - 2026-11-01
 
-A new version of the runtime: the long-planned `useEffectState`, a layout variant, abortable
-helpers, correctness fixes found by an audit against React 18.3 and 19.3, and a packaging fix for
-Node ESM consumers.
+A new version of the runtime: the long-planned `useEffectState`, a layout variant, an abortable
+`sleep()`, correctness fixes found by an audit against React 18.3 and 19.3 (then an adversarial
+review), and a packaging fix for Node ESM consumers.
 
 ### Added
 
 - `useEffectState(task, deps, options?)`: runs an async task as an effect and keeps its result in
   state: `status` (`idle` / `pending` / `success` / `error`), `data`, `error`, `isRunning`,
-  `isPending` / `isSuccess` / `isError`, `reload()` and `setData()`. Options: `enabled`,
-  `initialData` (typed: `data` becomes non-optional), `keepPreviousData`, `onSuccess`, `onError`,
-  `debugName`. When deps change it reports `pending` in the same render, so a previous result is
-  never shown for new deps.
+  `isPlaceholderData`, `reload()` and `setData()`. Options: `enabled`, `placeholderData` (typed:
+  `data` becomes non-optional; captured for each new set of deps) and `keepPreviousData`. When deps
+  change it is `pending` in that very render (one commit), so a previous result is never shown for
+  new deps, and outcomes of runs the latest committed render no longer asks for are ignored.
 - `useLayoutEffectTask(task, deps, options?)`: layout-effect variant that falls back to a passive
   effect on the server (no React 18 SSR warning).
-- Task scope helpers: `sleep(ms)` (abortable delay, for debouncing and polling) and
-  `abortable(promise)` (stop waiting for promises that cannot take a signal).
-- A one-time console warning when a dependency is recreated on every render (an inline object,
-  array or function), which makes a task re-run after every render.
+- Task scope: `sleep(ms)` (abortable delay, for debouncing, polling and backoff); `onCleanup()` now
+  returns a function that runs the cleanup early (at most once) and unregisters it.
+- `DependencyList` type export; the published types import nothing from `react`.
 - Type-level tests, React 18 + 19 test matrix, publint and are-the-types-wrong checks, a consumer
   smoke test that imports the packed tarball through ESM and CommonJS and server-renders with it.
 - Playground: race lab (naive `useEffect` vs `useEffectState`), debounced search, polling,
@@ -37,6 +36,9 @@ Node ESM consumers.
 - `onError` and `debugName` were captured per run, so a new `onError` was ignored until deps
   changed. The latest options are now always used.
 - A throwing `onError` produced an unhandled promise rejection.
+- On React Native, errors are now reported through `ErrorUtils.reportError` (LogBox, crash
+  reporters) when there is no `reportError`; the run's abort reason is a library `AbortError`
+  ("The effect run ended.") that is identifiable across runtimes.
 - The cleanup returned by a task ran after the `onCleanup` cleanups; all cleanups now run in one
   LIFO order.
 - `useEvent` wrote its ref during render, which leaks values from renders React discards under
@@ -55,6 +57,7 @@ Node ESM consumers.
 ### Changed
 
 - `deps` accept any `DependencyList` (readonly arrays and tuples).
+- `peerDependencies`: `react ^18.0.0 || ^19.0.0` (was `>=18`), the range CI tests.
 - Without `onError`, task and cleanup errors now surface like errors thrown in a plain effect:
   through the global `reportError` in browsers (so `window.onerror`, error monitoring and dev
   overlays see them), otherwise `console.error`, in every environment. 0.1 tried to log only

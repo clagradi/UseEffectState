@@ -100,6 +100,23 @@ describe('reportError', () => {
     expect(consoleWarn).toHaveBeenCalledWith('[effect-runtime] useEffectTask task failed (UserCard):', error);
   });
 
+  it("uses React Native's ErrorUtils.reportError when there is no global reportError", () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const nativeReport = vi.fn();
+    const host = globalThis as unknown as { ErrorUtils?: { reportError: (error: unknown) => void } };
+    host.ErrorUtils = { reportError: nativeReport };
+    const error = new Error('x');
+
+    try {
+      reportError(error, 'label', undefined, undefined);
+    } finally {
+      delete host.ErrorUtils;
+    }
+
+    expect(nativeReport).toHaveBeenCalledWith(error);
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
   it('prefers the global reportError and falls back to console.error when it throws', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const error = new Error('x');
@@ -148,6 +165,19 @@ describe('createRun', () => {
 
     expect(ran).toEqual(['c', 'a']);
     expect(reported).toEqual([failure]);
+  });
+
+  it('aborts with a library AbortError and runs cleanups registered after the end at once', () => {
+    const run = createRun(1, () => undefined);
+    run.dispose();
+    expect((run.signal.reason as Error).name).toBe('AbortError');
+    expect((run.signal.reason as Error).message).toBe('The effect run ended.');
+
+    const late = vi.fn();
+    const early = run.scope.onCleanup(late);
+    expect(late).toHaveBeenCalledTimes(1);
+    early();
+    expect(late).toHaveBeenCalledTimes(1);
   });
 
   it('commit only runs while active', () => {
@@ -207,22 +237,14 @@ describe('isPromiseLike', () => {
   });
 });
 
-describe('changedOnlyByIdentity', () => {
-  it('detects recreated plain objects, arrays and functions only', async () => {
-    const { changedOnlyByIdentity } = await import('../src/internal/deps');
-    const shared = { a: 1 };
-    expect(changedOnlyByIdentity([{ a: 1 }], [{ a: 1 }])).toBe(true);
-    expect(changedOnlyByIdentity([[1, 2]], [[1, 2]])).toBe(true);
-    expect(changedOnlyByIdentity([() => 1], [() => 1])).toBe(true);
-    expect(changedOnlyByIdentity([1, { a: shared }], [1, { a: shared }])).toBe(true);
-    expect(changedOnlyByIdentity([{ a: 1 }], [{ a: 2 }])).toBe(false);
-    expect(changedOnlyByIdentity([{ a: 1 }], [{ a: 1, b: 2 }])).toBe(false);
-    expect(changedOnlyByIdentity([{ a: {} }], [{ a: {} }])).toBe(false);
-    expect(changedOnlyByIdentity([new Date(1)], [new Date(1)])).toBe(false);
-    expect(changedOnlyByIdentity([[1]], [{ 0: 1 }])).toBe(false);
-    expect(changedOnlyByIdentity([1], [2])).toBe(false);
-    expect(changedOnlyByIdentity([1], [1])).toBe(false);
-    expect(changedOnlyByIdentity([1], [1, 2])).toBe(false);
-    expect(changedOnlyByIdentity([Object.create(null)], [Object.create(null)])).toBe(true);
+describe('depsEqual', () => {
+  it('compares like React: same length and Object.is per item', async () => {
+    const { depsEqual } = await import('../src/internal/deps');
+    const same = [1];
+    expect(depsEqual(same, same)).toBe(true);
+    expect(depsEqual([1, 'a', NaN], [1, 'a', NaN])).toBe(true);
+    expect(depsEqual([0], [-0])).toBe(false);
+    expect(depsEqual([1], [1, 2])).toBe(false);
+    expect(depsEqual([{}], [{}])).toBe(false);
   });
 });

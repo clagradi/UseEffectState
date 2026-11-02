@@ -26,7 +26,7 @@ npm run smoke:consumer
 
 - **Race lab**: naive `useEffect` + `useState` vs `useEffectState` with out-of-order responses.
 - **useEffectState**: `status` / `data` / `error` / `isRunning`, `reload()`, simulated failures.
-- **Debounced search**: `await sleep(300)` + `enabled` + `initialData` + `keepPreviousData`.
+- **Debounced search**: `await sleep(300)` + `enabled` + `placeholderData` + `keepPreviousData` (+ `isPlaceholderData`).
 - **Polling loop**: `useEffectTask` with a `for (;;)` loop, `commit()` and `sleep()`.
 - **useEvent**: an interval created once that always sees the latest state.
 - **onCleanup**: subscribe / unsubscribe per room, LIFO cleanups.
