@@ -1,20 +1,36 @@
-import { FetchDemo } from "./demos/FetchDemo";
-import { IntervalDemo } from "./demos/IntervalDemo";
-import { SubscriptionDemo } from "./demos/SubscriptionDemo";
+import { NetworkLog } from './components/NetworkLog';
+import { IntervalDemo } from './demos/IntervalDemo';
+import { PollingDemo } from './demos/PollingDemo';
+import { RaceLabDemo } from './demos/RaceLabDemo';
+import { SearchDemo } from './demos/SearchDemo';
+import { SubscriptionDemo } from './demos/SubscriptionDemo';
+import { UserProfileDemo } from './demos/UserProfileDemo';
 
 export default function App() {
   return (
-    <main className="app-shell">
-      <header>
-        <h1>@clagradi/effect-runtime playground</h1>
-        <p>Practical demos for fetch, interval and subscription cleanup patterns.</p>
+    <div className="app-shell">
+      <header className="app-header">
+        <h1>
+          <code>@clagradi/effect-runtime</code> playground
+        </h1>
+        <p>
+          Async effects that cancel, clean up and race correctly. Every request below goes to a
+          simulated API with random latency; watch the network log to see what gets aborted.
+          The app runs in <code>StrictMode</code>.
+        </p>
       </header>
 
-      <section className="demo-grid">
-        <FetchDemo />
-        <IntervalDemo />
-        <SubscriptionDemo />
-      </section>
-    </main>
+      <div className="layout">
+        <main className="demo-grid">
+          <RaceLabDemo />
+          <UserProfileDemo />
+          <SearchDemo />
+          <PollingDemo />
+          <IntervalDemo />
+          <SubscriptionDemo />
+        </main>
+        <NetworkLog />
+      </div>
+    </div>
   );
 }

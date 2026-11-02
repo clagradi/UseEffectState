@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useEffectTask } from "@clagradi/effect-runtime";
+import { useState } from 'react';
+import { useEffectTask } from '@clagradi/effect-runtime';
 
 type MessageHandler = (message: string) => void;
 
@@ -14,26 +14,29 @@ function subscribeToRoom(roomId: string, onMessage: MessageHandler): () => void 
 }
 
 export function SubscriptionDemo() {
-  const [roomId, setRoomId] = useState("alpha");
+  const [roomId, setRoomId] = useState('alpha');
   const [messages, setMessages] = useState<string[]>([]);
 
-  useEffectTask(({ onCleanup }) => {
-    setMessages([]);
+  useEffectTask(
+    ({ onCleanup }) => {
+      const unsubscribe = subscribeToRoom(roomId, (message) => {
+        setMessages((previous) => [message, ...previous].slice(0, 5));
+      });
 
-    const unsubscribe = subscribeToRoom(roomId, (message) => {
-      setMessages((prev) => [message, ...prev].slice(0, 5));
-    });
-
-    onCleanup(() => unsubscribe());
-  }, [roomId]);
+      // Cleanups run in reverse order when the room changes or on unmount.
+      onCleanup(unsubscribe);
+      onCleanup(() => setMessages([]));
+    },
+    [roomId]
+  );
 
   return (
     <article className="demo-card">
-      <h2>SubscriptionDemo</h2>
-      <p>Uses `onCleanup` to pair subscribe/unsubscribe on every room change.</p>
+      <h2>onCleanup</h2>
+      <p>Pairs subscribe / unsubscribe for every room. Cleanups run LIFO, like a stack.</p>
 
       <label>
-        Room:
+        Room
         <select value={roomId} onChange={(event) => setRoomId(event.target.value)}>
           <option value="alpha">alpha</option>
           <option value="beta">beta</option>

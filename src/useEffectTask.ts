@@ -1,160 +1,151 @@
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useCommitPhaseEffect, useIsomorphicLayoutEffect } from './internal/environment';
+import { isAbortError, reportError } from './internal/errors';
+import { createRun, isPromiseLike } from './internal/run';
+import type { DependencyList, EffectTaskCleanup, EffectTaskScope } from './types';
 import { useEvent } from './useEvent';
 
-export type EffectTaskCleanup = () => void;
-
-export interface EffectTaskScope {
-  signal: AbortSignal;
-  runId: number;
-  isActive: () => boolean;
-  commit: (fn: () => void) => void;
-  onCleanup: (fn: EffectTaskCleanup) => void;
-}
-
-export interface UseEffectTaskOptions {
-  layout?: boolean;
-  onError?: (err: unknown) => void;
-  debugName?: string;
-}
-
+/**
+ * The function run by `useEffectTask`. It may be sync or async and may return
+ * (or resolve to) a cleanup function. Prefer `scope.onCleanup` for cleanups:
+ * it also works for resources acquired before an `await`.
+ */
 export type EffectTask = (
   scope: EffectTaskScope
-) => void | EffectTaskCleanup | Promise<void | EffectTaskCleanup>;
+) => void | EffectTaskCleanup | PromiseLike<void | EffectTaskCleanup>;
 
-function isPromise<T>(value: T | Promise<T>): value is Promise<T> {
-  return typeof (value as Promise<T>)?.then === 'function';
+export interface UseEffectTaskOptions {
+  /**
+   * Receives errors thrown by the task and by its cleanups. Without it they
+   * surface like errors thrown in a plain effect: through the global
+   * `reportError` in browsers, otherwise `console.error`. Abort errors and
+   * errors from runs that already ended are never reported. The latest value
+   * is always used.
+   */
+  onError?: ((error: unknown) => void) | undefined;
+  /** Label for this hook in console messages (when errors fall back to `console.error`, and warnings). */
+  debugName?: string | undefined;
+  /**
+   * Run as a layout effect.
+   *
+   * @deprecated Use `useLayoutEffectTask` instead. Read once on mount: changing
+   * it later has no effect (switching effect kinds would break the Rules of Hooks).
+   */
+  layout?: boolean | undefined;
 }
 
-function isAbortError(error: unknown): boolean {
-  return (
-    error instanceof DOMException &&
-    (error.name === 'AbortError' || error.code === DOMException.ABORT_ERR)
-  );
-}
+type EffectHook = typeof useEffect;
 
-function reportError(
-  error: unknown,
-  signal: AbortSignal,
-  options?: UseEffectTaskOptions
-): void {
-  if (signal.aborted || isAbortError(error)) {
-    return;
-  }
-
-  if (options?.onError) {
-    options.onError(error);
-    return;
-  }
-
-  const runtime = globalThis as typeof globalThis & {
-    process?: { env?: { NODE_ENV?: string } };
-  };
-
-  if (runtime.process?.env?.NODE_ENV !== 'production') {
-    console.error(
-      `[useEffectTask${options?.debugName ? `:${options.debugName}` : ''}]`,
-      error
-    );
-  }
-}
-
-export function useEffectTask(
+function useTaskRunner(
+  useEffectHook: EffectHook,
+  hookName: string,
   task: EffectTask,
-  deps: any[],
-  options?: UseEffectTaskOptions
+  deps: DependencyList,
+  options: UseEffectTaskOptions | undefined,
+  frozenLayout?: boolean
 ): void {
+  const runTask = useEvent(task);
+  const optionsRef = useRef(options);
   const runIdRef = useRef(0);
-  const latestTask = useEvent(task);
-  const selectedEffect = options?.layout ? useLayoutEffect : useEffect;
+  const warnedRef = useRef(false);
 
-  selectedEffect(() => {
-    const runId = ++runIdRef.current;
-    const controller = new AbortController();
-    const cleanupStack: EffectTaskCleanup[] = [];
-    let taskCleanup: EffectTaskCleanup | undefined;
-    let disposed = false;
+  useCommitPhaseEffect(() => {
+    optionsRef.current = options;
 
-    const isActive = (): boolean => {
-      return !controller.signal.aborted && runIdRef.current === runId && !disposed;
+    if (
+      frozenLayout !== undefined &&
+      !warnedRef.current &&
+      (options?.layout === true) !== frozenLayout
+    ) {
+      warnedRef.current = true;
+      console.warn(
+        `[effect-runtime] ${hookName}: the \`layout\` option changed after mount and is ignored. ` +
+          'Use useLayoutEffectTask for layout effects.'
+      );
+    }
+  });
+
+  // `useEffectHook` is always useEffect or useLayoutEffect (picked once per
+  // environment), so this callback never runs during render.
+  // eslint-disable-next-line react-hooks/refs
+  useEffectHook(() => {
+    const report = (what: string, error: unknown): void => {
+      const current = optionsRef.current;
+      reportError(error, `${hookName} ${what}`, current?.debugName, current?.onError);
     };
 
-    const runCleanup = (cleanup?: EffectTaskCleanup): void => {
-      if (!cleanup) {
-        return;
-      }
+    const run = createRun(++runIdRef.current, (error) => report('cleanup failed', error));
 
-      try {
-        cleanup();
-      } catch (error) {
-        reportError(error, controller.signal, options);
-      }
-    };
-
-    const dispose = (): void => {
-      if (disposed) {
-        return;
-      }
-
-      disposed = true;
-      controller.abort();
-
-      for (let index = cleanupStack.length - 1; index >= 0; index -= 1) {
-        runCleanup(cleanupStack[index]);
-      }
-
-      cleanupStack.length = 0;
-      runCleanup(taskCleanup);
-      taskCleanup = undefined;
-    };
-
-    const scope: EffectTaskScope = {
-      signal: controller.signal,
-      runId,
-      isActive,
-      commit: (fn) => {
-        if (!isActive()) {
-          return;
-        }
-
-        fn();
-      },
-      onCleanup: (fn) => {
-        if (disposed) {
-          runCleanup(fn);
-          return;
-        }
-
-        cleanupStack.push(fn);
+    const reportTaskError = (error: unknown): void => {
+      if (run.isActive() && !isAbortError(error, run.signal)) {
+        report('task failed', error);
       }
     };
 
     try {
-      const output = latestTask(scope);
+      const output = runTask(run.scope);
 
-      if (isPromise(output)) {
-        output
-          .then((resolvedCleanup) => {
-            if (typeof resolvedCleanup !== 'function') {
-              return;
-            }
-
-            if (disposed || !isActive()) {
-              runCleanup(resolvedCleanup);
-              return;
-            }
-
-            taskCleanup = resolvedCleanup;
-          })
-          .catch((error) => {
-            reportError(error, controller.signal, options);
-          });
-      } else if (typeof output === 'function') {
-        taskCleanup = output;
+      if (typeof output === 'function') {
+        run.addCleanup(output);
+      } else if (isPromiseLike<void | EffectTaskCleanup>(output)) {
+        Promise.resolve(output).then((cleanup) => {
+          // A cleanup that arrives after the run ended is executed immediately.
+          if (typeof cleanup === 'function') {
+            run.addCleanup(cleanup);
+          }
+        }, reportTaskError);
       }
     } catch (error) {
-      reportError(error, controller.signal, options);
+      reportTaskError(error);
     }
 
-    return dispose;
+    return run.dispose;
+    // The task is read through useEvent, so only the caller's deps decide when a run starts.
   }, deps);
+}
+
+/**
+ * `useEffect` for async work, done right.
+ *
+ * Every run gets its own `AbortSignal` (aborted on re-run and unmount), a
+ * `commit()` guard against stale results, LIFO cleanups via `onCleanup()`, an
+ * abortable `sleep()`, and errors are reported instead of disappearing. The latest `task` is always the one that runs, so it never
+ * sees stale props or state; `deps` decide *when* it runs.
+ *
+ * @example
+ * useEffectTask(async ({ signal, commit }) => {
+ *   const response = await fetch(`/api/users/${id}`, { signal });
+ *   const user = await response.json();
+ *   commit(() => setUser(user));
+ * }, [id]);
+ */
+export function useEffectTask(
+  task: EffectTask,
+  deps: DependencyList,
+  options?: UseEffectTaskOptions
+): void {
+  // Read once: the effect kind must not change between renders.
+  const [layout] = useState(() => options?.layout === true);
+
+  useTaskRunner(
+    layout ? useIsomorphicLayoutEffect : useEffect,
+    'useEffectTask',
+    task,
+    deps,
+    options,
+    layout
+  );
+}
+
+/**
+ * Same as `useEffectTask`, but runs as a layout effect: after DOM mutations and
+ * before the browser paints. Falls back to a passive effect on the server, so it
+ * never triggers React's SSR `useLayoutEffect` warning.
+ */
+export function useLayoutEffectTask(
+  task: EffectTask,
+  deps: DependencyList,
+  options?: Omit<UseEffectTaskOptions, 'layout'>
+): void {
+  useTaskRunner(useIsomorphicLayoutEffect, 'useLayoutEffectTask', task, deps, options);
 }

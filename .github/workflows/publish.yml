@@ -1,41 +1,191 @@
 name: Publish package
 
+# Release flow (see CONTRIBUTING.md): set "version" in package.json, add a
+# "## [x.y.z] - YYYY-MM-DD" section to CHANGELOG.md, merge to main, then push
+# the tag "vx.y.z" pointing at that commit on main.
+#
+# Authentication is npm trusted publishing (OIDC): no npm token is stored in
+# GitHub, and provenance is generated automatically (public repo + package).
+# One-time setup on npmjs.com > @clagradi/effect-runtime > Settings >
+# Trusted publishing > GitHub Actions:
+#   Organization or user: clagradi
+#   Repository:           UseEffectState   (case-sensitive)
+#   Workflow filename:    publish.yml
+#   Environment name:     (leave empty)
+#   Allowed actions:      tick "npm publish" (newer configurations only allow
+#                         `npm stage publish` unless you opt in)
+# A new configuration expires after 48 hours unless a publish through it
+# succeeds, so create it shortly before pushing the tag.
+#
+# Optional staged publishing: set the repository variable NPM_STAGED_PUBLISH to
+# "true"; the version is then staged and a maintainer approves it with 2FA on
+# npmjs.com (Staged Packages tab) or with `npm stage approve <id>`.
+#
+# A failed job can be re-run on its own from the run page ("Re-run failed jobs").
+
 on:
   push:
     tags:
-      - 'v*'
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+permissions: {}
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  publish:
+  build:
+    name: Verify, build and pack
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
-      id-token: write
-
+    outputs:
+      prerelease: ${{ steps.meta.outputs.prerelease }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # full history for the main-branch check
+          persist-credentials: false
+
+      - name: Check that the tag points at a commit on main
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::$GITHUB_REF_NAME does not point at a commit on main"
+            exit 1
+          fi
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 20
-          registry-url: 'https://registry.npmjs.org'
-          cache: 'npm'
+          node-version-file: .nvmrc
+          package-manager-cache: false # no caches in release builds
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Typecheck
-        run: npm run typecheck
+      - name: Check that the tag matches package.json
+        id: meta
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $version"
+            exit 1
+          fi
+          case "$version" in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
 
-      - name: Test
-        run: npm run test
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          mkdir -p release
+          node ./scripts/changelog-section.mjs "$GITHUB_REF_NAME" > release/release-notes.md
+          test -s release/release-notes.md
 
-      - name: Build
-        run: npm run build
+      - name: Lint, typecheck, test, build, package checks
+        run: npm run check
 
-      - name: Publish to npm
-        run: npm publish --provenance --access public
+      - name: Consumer smoke test
+        run: npm run smoke:consumer
+
+      - name: Pack
+        run: npm pack --ignore-scripts --pack-destination release
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to npm
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing (OIDC) and provenance
+    steps:
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # Trusted publishing needs npm >= 11.5.1: Node 24 bundles npm 11 (Node 22 bundles npm 10).
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Download release artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
+
+      # No checkout and no npm ci here: the only code that runs while the OIDC token is
+      # available is npm itself, and publishing a tarball runs no lifecycle scripts.
+      # No NODE_AUTH_TOKEN either: npm would silently fall back to it if OIDC failed.
+      - name: Publish
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          STAGED: ${{ vars.NPM_STAGED_PUBLISH }}
+        run: |
+          shopt -s nullglob
+          tarballs=(./release/*.tgz) # keep "./": npm reads "release/x.tgz" as a GitHub repo
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one tarball in release/, found ${#tarballs[@]}"
+            exit 1
+          fi
+
+          manifest="$(tar -xOzf "${tarballs[0]}" package/package.json)"
+          name="$(node -p 'JSON.parse(process.argv[1]).name' "$manifest")"
+          version="$(node -p 'JSON.parse(process.argv[1]).version' "$manifest")"
+          if npm view "$name@$version" version > /dev/null 2>&1; then
+            echo "$name@$version is already on npm, nothing to publish."
+            exit 0
+          fi
+
+          echo "npm $(npm --version)"
+          args=("${tarballs[0]}")
+          # npm refuses to publish a prerelease without an explicit dist-tag.
+          if [ "$PRERELEASE" = "true" ]; then
+            args+=(--tag next)
+          fi
+          if [ "$STAGED" = "true" ]; then
+            npm stage publish "${args[@]}"
+          else
+            npm publish "${args[@]}"
+          fi
+
+  github-release:
+    name: Create GitHub release
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release
+    steps:
+      - name: Download release artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG already exists, nothing to do."
+            exit 0
+          fi
+          flags=(--verify-tag --title "$TAG" --notes-file release/release-notes.md)
+          if [ "$PRERELEASE" = "true" ]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$TAG" "${flags[@]}"

@@ -1,7 +1,7 @@
 {
   "name": "@clagradi/effect-runtime",
-  "version": "0.1.2",
-  "description": "Better async effect primitive for React 18+",
+  "version": "0.2.0",
+  "description": "useEffectState and useEffectTask for React: tiny, dependency-free hooks for async effects that cancel, clean up and race correctly.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -13,52 +13,86 @@
   "homepage": "https://github.com/clagradi/UseEffectState#readme",
   "keywords": [
     "react",
+    "react-hooks",
     "hooks",
+    "useeffectstate",
+    "use-effect-state",
+    "useeffecttask",
     "useeffect",
+    "usestate",
     "async",
+    "data-fetching",
     "abortcontroller",
+    "abort",
+    "cancellation",
+    "race-condition",
     "effect",
-    "concurrency"
+    "concurrency",
+    "strict-mode"
   ],
-  "main": "dist/index.cjs",
-  "module": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.cts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
-    }
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
   ],
-  "sideEffects": false,
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
     "build": "tsup",
-    "pack:check": "npm pack --dry-run",
+    "check": "npm run lint && npm run typecheck && npm run test:coverage && npm run build && npm run lint:pkg",
+    "lint": "eslint .",
+    "lint:pkg": "publint --strict && attw --pack .",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm run test",
     "smoke:consumer": "node ./scripts/smoke-consumer.mjs",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run typecheck && npm run test && npm run build && npm run pack:check"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.build.json"
   },
   "peerDependencies": {
-    "react": ">=18"
+    "react": "^18.0.0 || ^19.0.0"
   },
   "devDependencies": {
-    "@testing-library/react": "^16.1.0",
-    "@types/node": "^22.13.10",
-    "@types/react": "^18.3.18",
-    "@types/react-dom": "^18.3.5",
-    "jsdom": "^25.0.1",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "tsup": "^8.3.5",
-    "typescript": "^5.7.2",
-    "vitest": "^4.0.18"
+    "@arethetypeswrong/cli": "^0.18.5",
+    "@eslint/js": "^10.0.1",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitest/coverage-v8": "^5.0.5",
+    "eslint": "^10.14.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.14.0",
+    "jsdom": "^30.1.3",
+    "publint": "^0.3.25",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tsup": "^9.0.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.0.5"
+  },
+  "overrides": {
+    "minimatch": "^11.0.3"
   }
 }

@@ -1,0 +1,9 @@
+{
+  // Library sources only, without Node types: catches accidental use of
+  // Node-only APIs in code that runs in browsers and React Native.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": []
+  },
+  "include": ["src"]
+}

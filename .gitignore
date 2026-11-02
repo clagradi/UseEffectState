@@ -7,5 +7,6 @@ coverage/
 *.log
 *.tgz
 *.tsbuildinfo
-examples/vite-react/vite.config.js
-examples/vite-react/vite.config.d.ts
+
+# Claude Code agent worktrees
+.claude/worktrees/
