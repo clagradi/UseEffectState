@@ -52,16 +52,27 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare release notes (fails early if the CHANGELOG section is missing)
+        run: node ./scripts/changelog-section.mjs "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
+
       - name: Lint, typecheck, test, build, package checks
         run: npm run check
 
       - name: Consumer smoke test
         run: npm run smoke:consumer
 
+      # The last two steps are idempotent, so a failed release can be re-run
+      # (Actions > Publish package > Run workflow, on the same tag).
       - name: Publish to npm
         run: |
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already on npm, skipping publish."
+            exit 0
+          fi
           # npm 11 refuses to publish a prerelease without an explicit dist-tag.
-          case "$GITHUB_REF_NAME" in
+          case "$version" in
             *-*) dist_tag=next ;;
             *) dist_tag=latest ;;
           esac
@@ -74,7 +85,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          node ./scripts/changelog-section.mjs "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists, skipping."
+            exit 0
+          fi
           prerelease=""
           case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
           gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" \

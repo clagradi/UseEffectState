@@ -44,25 +44,32 @@ type GlobalWithReportError = typeof globalThis & { reportError?: (error: unknown
  * it reaches `window.onerror`, error monitoring and dev overlays), otherwise
  * through `console.error` with a recognisable prefix.
  */
-function reportUnhandled(error: unknown, prefix: string): void {
+function reportUnhandled(error: unknown, prefix: string, labelled: boolean): void {
   const runtime = globalThis as GlobalWithReportError;
 
   if (typeof runtime.reportError === 'function') {
     try {
       runtime.reportError(error);
-      return;
     } catch {
-      // Fall through to console.error.
+      console.error(`${prefix}:`, error);
+      return;
     }
+
+    // reportError only carries the error itself: keep an explicit debugName visible.
+    if (labelled) {
+      console.warn(`${prefix}:`, error);
+    }
+    return;
   }
 
   console.error(`${prefix}:`, error);
 }
 
 /**
- * Hands an unexpected error to `onError`, or reports it as unhandled.
- * Never throws: a failing `onError` is reported instead of becoming an
- * unhandled rejection.
+ * Hands an unexpected error to `onError`, or reports it as unhandled. With a
+ * `debugName`, a labelled console.warn accompanies `reportError` (which only
+ * carries the error). Never throws: a failing `onError` is reported instead of
+ * becoming an unhandled rejection.
  */
 export function reportError(
   error: unknown,
@@ -72,15 +79,17 @@ export function reportError(
 ): void {
   const prefix = `[effect-runtime] ${label}${debugName ? ` (${debugName})` : ''}`;
 
+  const labelled = debugName !== undefined && debugName !== '';
+
   if (onError) {
     try {
       onError(error);
       return;
     } catch (handlerError) {
       // Report both: the handler's own failure and the error it failed to handle.
-      reportUnhandled(handlerError, `${prefix}: onError threw while handling an error`);
+      reportUnhandled(handlerError, `${prefix}: onError threw while handling an error`, labelled);
     }
   }
 
-  reportUnhandled(error, prefix);
+  reportUnhandled(error, prefix, labelled);
 }

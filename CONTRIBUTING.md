@@ -42,11 +42,12 @@ npm install # restore React 19
 
 ## Releasing
 
-1. Update `CHANGELOG.md` (a `## [x.y.z] - YYYY-MM-DD` section; it becomes the GitHub release notes).
-2. Bump the version and create the tag:
+1. Add a `## [x.y.z] - YYYY-MM-DD` section to `CHANGELOG.md` (it becomes the GitHub release notes)
+   and commit it: `npm version` needs a clean working tree.
+2. Bump the version; this commits `package.json` / `package-lock.json` and creates the `vx.y.z` tag:
 
    ```bash
-   npm version minor   # or patch / major
+   npm version minor   # or patch / major / prerelease --preid rc
    ```
 
 3. Push the commit and the tag:
@@ -57,7 +58,9 @@ npm install # restore React 19
 
 4. The `Publish package` workflow (`.github/workflows/publish.yml`) checks that the tag matches
    `package.json`, runs `npm run check` and the consumer smoke test, publishes to npm with
-   provenance, and creates the GitHub release.
+   provenance (prereleases under the `next` dist-tag), and creates the GitHub release. If a step
+   fails, fix the cause and re-run it from **Actions → Publish package → Run workflow** with the
+   tag selected: publishing and release creation are skipped when already done.
 
 ### One-time npm setup
 

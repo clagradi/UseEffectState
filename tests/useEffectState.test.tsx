@@ -1,9 +1,20 @@
-import { StrictMode, Suspense, memo, startTransition, useState } from 'react';
+import {
+  StrictMode,
+  Suspense,
+  memo,
+  startTransition,
+  useEffect,
+  useLayoutEffect,
+  useState
+} from 'react';
+import { flushSync } from 'react-dom';
+import { createRoot } from 'react-dom/client';
 import { act, render, renderHook, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { useEffectState } from '../src';
 import type { EffectState, EffectTaskScope } from '../src';
 import { Activity, captureConsole, createSuspender, deferred, flushMicrotasks, wait } from './helpers';
+import type { SetEffectStateData } from '../src';
 
 async function flush(): Promise<void> {
   await act(async () => {
@@ -487,6 +498,29 @@ describe('useEffectState: options', () => {
     expect(result.current.data).toEqual([2]);
   });
 
+  it('keepPreviousData does not keep data when the deps change also disables the hook', async () => {
+    const { result, rerender } = renderHook(
+      ({ query }) =>
+        useEffectState(async () => [`${query}-result`], [query], {
+          enabled: query.length > 0,
+          initialData: [] as string[],
+          keepPreviousData: true
+        }),
+      { initialProps: { query: 'ab' } }
+    );
+
+    await flush();
+    expect(result.current.data).toEqual(['ab-result']);
+
+    rerender({ query: '' });
+    expect(snapshot(result.current)).toEqual({
+      status: 'idle',
+      data: [],
+      error: undefined,
+      isRunning: false
+    });
+  });
+
   it('calls onSuccess and onError with the latest callbacks, only for the current run', async () => {
     const firstSuccess = vi.fn();
     const latestSuccess = vi.fn();
@@ -550,6 +584,182 @@ describe('useEffectState: options', () => {
     const messages = error.mock.calls.map((call) => (call[1] as Error).message);
     expect(messages).toEqual(['onError failed', 'onSuccess failed']);
     expect(error.mock.calls[1]?.[0]).toContain('(Probe)');
+  });
+});
+
+describe('useEffectState: races and robustness', () => {
+  it('reload() aborts the run in flight immediately, and its late result never lands', async () => {
+    const first = deferred<string>();
+    const onSuccess = vi.fn();
+    const scopes: EffectTaskScope[] = [];
+    const { result } = renderHook(() =>
+      useEffectState(
+        (scope) => {
+          scopes.push(scope);
+          return scopes.length === 1 ? first.promise : new Promise<string>(() => undefined);
+        },
+        [],
+        { onSuccess }
+      )
+    );
+
+    act(() => {
+      result.current.reload();
+      // Synchronously, before React even re-rendered.
+      expect(scopes[0]?.signal.aborted).toBe(true);
+    });
+
+    await act(async () => first.resolve('stale'));
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(result.current.isRunning).toBe(true);
+    expect(result.current.data).toBeUndefined();
+  });
+
+  it('ignores a stale outcome that lands between the commit and the effect cleanup', async () => {
+    // Outside act(), a default-priority update commits in one task and runs its
+    // passive effects (which dispose the old run) in a later one. A result that
+    // arrives in between must not land.
+    const actGlobal = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+    const previousActEnvironment = actGlobal.IS_REACT_ACT_ENVIRONMENT;
+    actGlobal.IS_REACT_ACT_ENVIRONMENT = false;
+
+    const gates = new Map<number, ReturnType<typeof deferred<string>>>();
+    const gateFor = (id: number) => {
+      if (!gates.has(id)) gates.set(id, deferred<string>());
+      return gates.get(id)!;
+    };
+    const onSuccess = vi.fn();
+    const seen: string[] = [];
+
+    // Resolves the previous run's promise during the commit (layout phase).
+    function ResolveAtCommit({ previousId }: { previousId: number }) {
+      useLayoutEffect(() => {
+        gateFor(previousId).resolve(`stale-${previousId}`);
+      }, [previousId]);
+      return null;
+    }
+
+    function Demo({ id, enabled, previousId }: { id: number; enabled: boolean; previousId?: number }) {
+      const state = useEffectState(() => gateFor(id).promise, [id], { onSuccess, enabled });
+      seen.push(`${id}:${state.status}:${String(state.data)}`);
+      return previousId === undefined ? null : <ResolveAtCommit previousId={previousId} />;
+    }
+
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    try {
+      root.render(<Demo id={1} enabled />);
+      await wait(30); // committed, and run 1 started
+
+      root.render(<Demo id={2} enabled previousId={1} />); // default priority
+      await wait(30);
+      expect(onSuccess).not.toHaveBeenCalled();
+
+      gateFor(2).resolve('two');
+      await wait(30);
+      expect(onSuccess.mock.calls).toEqual([['two']]);
+
+      // Same for enabled: false.
+      root.render(<Demo id={3} enabled />);
+      await wait(30);
+      root.render(<Demo id={3} enabled={false} previousId={3} />);
+      await wait(30);
+      expect(onSuccess.mock.calls).toEqual([['two']]);
+      expect(seen[seen.length - 1]).toBe('3:idle:undefined');
+    } finally {
+      flushSync(() => root.unmount());
+      actGlobal.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    }
+  });
+
+  it('keeps a setData() made by a child effect in the commit that changed deps', async () => {
+    const gates = new Map<number, ReturnType<typeof deferred<string>>>();
+    const gateFor = (id: number) => {
+      if (!gates.has(id)) gates.set(id, deferred<string>());
+      return gates.get(id)!;
+    };
+    let latest: { status: string; data: string | undefined; isRunning: boolean } | undefined;
+
+    function Child({ id, setData }: { id: number; setData: SetEffectStateData<string> }) {
+      useEffect(() => {
+        if (id === 2) {
+          setData('optimistic-2');
+        }
+      }, [id, setData]);
+      return null;
+    }
+
+    function Parent({ id }: { id: number }) {
+      const state = useEffectState(() => gateFor(id).promise, [id]);
+      latest = { status: state.status, data: state.data, isRunning: state.isRunning };
+      return <Child id={id} setData={state.setData} />;
+    }
+
+    const { rerender } = render(<Parent id={1} />);
+    await act(async () => gateFor(1).resolve('one'));
+    rerender(<Parent id={2} />);
+
+    expect(latest).toEqual({ status: 'success', data: 'optimistic-2', isRunning: true });
+
+    await act(async () => gateFor(2).resolve('two'));
+    expect(latest).toEqual({ status: 'success', data: 'two', isRunning: false });
+  });
+
+  it('does not render-loop when a dep is recreated on every render, and warns once', async () => {
+    // Outside act() so that a regression shows up as a failing count, not a hang.
+    const actGlobal = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+    const previousActEnvironment = actGlobal.IS_REACT_ACT_ENVIRONMENT;
+    actGlobal.IS_REACT_ACT_ENVIRONMENT = false;
+    const { warn } = captureConsole();
+    let renders = 0;
+    let runs = 0;
+
+    function Demo({ id, tick }: { id: number; tick: number }) {
+      renders += 1;
+      const filter = { id }; // a new object on every render (a common mistake)
+      const state = useEffectState(
+        () => {
+          runs += 1;
+          return new Promise<number>(() => undefined);
+        },
+        [filter],
+        { debugName: 'Filters' }
+      );
+      return <div>{`${state.status}:${tick}`}</div>;
+    }
+
+    const root = createRoot(document.createElement('div'));
+    try {
+      root.render(<Demo id={1} tick={0} />);
+      await wait(50);
+      expect(renders).toBeLessThanOrEqual(3);
+
+      for (let tick = 1; tick <= 4; tick += 1) {
+        root.render(<Demo id={1} tick={tick} />);
+        await wait(10);
+      }
+      await wait(50);
+
+      expect(renders).toBeLessThanOrEqual(12);
+      expect(runs).toBe(5);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain('useEffectState (Filters)');
+    } finally {
+      flushSync(() => root.unmount());
+      actGlobal.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    }
+  });
+
+  it('does not warn about deps that really change', async () => {
+    const { warn } = captureConsole();
+    const { rerender } = renderHook(({ id }) => useEffectState(async () => id, [{ id }.id]), {
+      initialProps: { id: 1 }
+    });
+    for (let id = 2; id <= 6; id += 1) {
+      rerender({ id });
+    }
+    await flush();
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 

@@ -20,6 +20,8 @@ Node ESM consumers.
   effect on the server (no React 18 SSR warning).
 - Task scope helpers: `sleep(ms)` (abortable delay, for debouncing and polling) and
   `abortable(promise)` (stop waiting for promises that cannot take a signal).
+- A one-time console warning when a dependency is recreated on every render (an inline object,
+  array or function), which makes a task re-run after every render.
 - Type-level tests, React 18 + 19 test matrix, publint and are-the-types-wrong checks, a consumer
   smoke test that imports the packed tarball through ESM and CommonJS and server-renders with it.
 - Playground: race lab (naive `useEffect` vs `useEffectState`), debounced search, polling,
@@ -58,7 +60,9 @@ Node ESM consumers.
   overlays see them), otherwise `console.error`, in every environment. 0.1 tried to log only
   outside production, but bundlers never replaced its `process.env` check, and runtimes with a real
   `process.env.NODE_ENV === 'production'` (React Native release builds) dropped errors silently.
-- `useEvent` throws when called during the first render (before its callback is committed).
+- `useEvent` throws when called during the first render (before its callback is committed), and is
+  typed like React's `useEffectEvent` (`T extends Function`): unannotated callback parameters are
+  now reported by strict TypeScript instead of silently becoming `any`.
 - CI: Node 22 / 24 / 26 x React 18 / 19, lint (ESLint 10 + React hooks rules), package checks;
   publishing via npm trusted publishing (OIDC) with provenance, GitHub release notes from this
   changelog; Dependabot.

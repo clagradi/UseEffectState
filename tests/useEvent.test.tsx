@@ -50,7 +50,7 @@ describe('useEvent', () => {
     const consoleError = console.error;
     console.error = () => undefined; // React logs the render error
     try {
-      expect(() => render(<Demo />)).toThrow(/called during render/);
+      expect(() => render(<Demo />)).toThrow(/called before its component committed/);
     } finally {
       console.error = consoleError;
     }

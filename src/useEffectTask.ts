@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DependencyList } from 'react';
 import { useCommitPhaseEffect, useIsomorphicLayoutEffect } from './internal/environment';
+import { createUnstableDepsDetector } from './internal/deps';
 import { isAbortError, reportError } from './internal/errors';
 import { createRun, isPromiseLike } from './internal/run';
 import type { EffectTaskCleanup, EffectTaskScope } from './types';
@@ -17,12 +18,14 @@ export type EffectTask = (
 
 export interface UseEffectTaskOptions {
   /**
-   * Receives errors thrown by the task and by its cleanups. Without it they are
-   * logged with `console.error`. Abort errors and errors from runs that already
-   * ended are never reported. The latest value is always used.
+   * Receives errors thrown by the task and by its cleanups. Without it they
+   * surface like errors thrown in a plain effect: through the global
+   * `reportError` in browsers, otherwise `console.error`. Abort errors and
+   * errors from runs that already ended are never reported. The latest value
+   * is always used.
    */
   onError?: ((error: unknown) => void) | undefined;
-  /** Label included in logged errors. */
+  /** Label for this hook in console messages (when errors fall back to `console.error`, and warnings). */
   debugName?: string | undefined;
   /**
    * Run as a layout effect.
@@ -47,6 +50,7 @@ function useTaskRunner(
   const optionsRef = useRef(options);
   const runIdRef = useRef(0);
   const warnedRef = useRef(false);
+  const [detectUnstableDeps] = useState(() => createUnstableDepsDetector(hookName));
 
   useCommitPhaseEffect(() => {
     optionsRef.current = options;
@@ -72,6 +76,8 @@ function useTaskRunner(
       const current = optionsRef.current;
       reportError(error, `${hookName} ${what}`, current?.debugName, current?.onError);
     };
+
+    detectUnstableDeps(deps, optionsRef.current?.debugName);
 
     const run = createRun(++runIdRef.current, (error) => report('cleanup failed', error));
 

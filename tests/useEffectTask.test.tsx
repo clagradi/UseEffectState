@@ -966,6 +966,37 @@ describe('useEffectTask: React integration', () => {
   });
 });
 
+describe('useEffectTask: deps', () => {
+  it('warns once when a dependency is recreated on every render', () => {
+    const { warn } = captureConsole();
+    const task = vi.fn();
+    const { rerender } = renderHook(({ id }) => useEffectTask(task, [{ id }], { debugName: 'Probe' }), {
+      initialProps: { id: 1 }
+    });
+
+    for (let index = 0; index < 5; index += 1) {
+      rerender({ id: 1 });
+    }
+
+    expect(task).toHaveBeenCalledTimes(6);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('useEffectTask (Probe)');
+  });
+
+  it('does not warn when objects in deps really change', () => {
+    const { warn } = captureConsole();
+    const { rerender } = renderHook(({ id }) => useEffectTask(() => undefined, [{ id }]), {
+      initialProps: { id: 1 }
+    });
+
+    for (let id = 2; id <= 6; id += 1) {
+      rerender({ id });
+    }
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
 describe('useLayoutEffectTask and the layout option', () => {
   it('useLayoutEffectTask runs before passive effects of the same commit', () => {
     const log: string[] = [];

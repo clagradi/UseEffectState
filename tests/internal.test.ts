@@ -88,6 +88,18 @@ describe('reportError', () => {
     ]);
   });
 
+  it('adds a labelled console.warn next to reportError when a debugName is set', () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const globalReport = vi.fn();
+    (globalThis as unknown as GlobalWithReportError).reportError = globalReport;
+    const error = new Error('x');
+
+    reportError(error, 'useEffectTask task failed', 'UserCard', undefined);
+
+    expect(globalReport).toHaveBeenCalledWith(error);
+    expect(consoleWarn).toHaveBeenCalledWith('[effect-runtime] useEffectTask task failed (UserCard):', error);
+  });
+
   it('prefers the global reportError and falls back to console.error when it throws', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const error = new Error('x');
@@ -192,5 +204,25 @@ describe('isPromiseLike', () => {
     expect(isPromiseLike(null)).toBe(false);
     expect(isPromiseLike(undefined)).toBe(false);
     expect(isPromiseLike({ then: 1 })).toBe(false);
+  });
+});
+
+describe('changedOnlyByIdentity', () => {
+  it('detects recreated plain objects, arrays and functions only', async () => {
+    const { changedOnlyByIdentity } = await import('../src/internal/deps');
+    const shared = { a: 1 };
+    expect(changedOnlyByIdentity([{ a: 1 }], [{ a: 1 }])).toBe(true);
+    expect(changedOnlyByIdentity([[1, 2]], [[1, 2]])).toBe(true);
+    expect(changedOnlyByIdentity([() => 1], [() => 1])).toBe(true);
+    expect(changedOnlyByIdentity([1, { a: shared }], [1, { a: shared }])).toBe(true);
+    expect(changedOnlyByIdentity([{ a: 1 }], [{ a: 2 }])).toBe(false);
+    expect(changedOnlyByIdentity([{ a: 1 }], [{ a: 1, b: 2 }])).toBe(false);
+    expect(changedOnlyByIdentity([{ a: {} }], [{ a: {} }])).toBe(false);
+    expect(changedOnlyByIdentity([new Date(1)], [new Date(1)])).toBe(false);
+    expect(changedOnlyByIdentity([[1]], [{ 0: 1 }])).toBe(false);
+    expect(changedOnlyByIdentity([1], [2])).toBe(false);
+    expect(changedOnlyByIdentity([1], [1])).toBe(false);
+    expect(changedOnlyByIdentity([1], [1, 2])).toBe(false);
+    expect(changedOnlyByIdentity([Object.create(null)], [Object.create(null)])).toBe(true);
   });
 });

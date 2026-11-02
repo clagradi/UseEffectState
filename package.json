@@ -53,11 +53,11 @@
   },
   "scripts": {
     "build": "tsup",
-    "check": "npm run lint && npm run typecheck && npm run test && npm run build && npm run lint:pkg",
+    "check": "npm run lint && npm run typecheck && npm run test:coverage && npm run build && npm run lint:pkg",
     "lint": "eslint .",
     "lint:pkg": "publint --strict && attw --pack .",
     "prepack": "npm run build",
-    "prepublishOnly": "npm run check",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm run test",
     "smoke:consumer": "node ./scripts/smoke-consumer.mjs",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",

@@ -12,13 +12,14 @@ npm install
 npm run dev
 ```
 
-The app installs `@clagradi/effect-runtime` from npm. To try unreleased changes from this
-repository instead, run the consumer smoke test from the repository root (it installs the packed
-tarball here) and then `npm run dev`:
+`npm install` takes `@clagradi/effect-runtime` from npm. Inside this repository, `npm run dev`
+then serves the library **source** (`../../src`) through a Vite alias, so library edits show up
+immediately; `npm run build` always uses the installed package. To build against unreleased
+changes, run the consumer smoke test from the repository root: it installs the packed tarball
+here and builds the app.
 
 ```bash
 npm run smoke:consumer
-cd examples/vite-react && npm run dev
 ```
 
 ## Demos
