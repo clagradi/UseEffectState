@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [0.2.0] - 2026-11-01
+## [0.2.0] - 2026-11-02
 
 A new version of the runtime: the long-planned `useEffectState`, a layout variant, an abortable
 `sleep()`, correctness fixes found by an audit against React 18.3 and 19.3 (then an adversarial

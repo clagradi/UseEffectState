@@ -53,6 +53,21 @@ updates:
       example:
         patterns: ['*']
         update-types: [minor, patch]
+    ignore:
+      # Same TypeScript line as the library (typescript-eslint does not support
+      # TypeScript 7 yet), and TypeScript 7 ships only native binaries, which do
+      # not run in StackBlitz WebContainers, where the README links this app.
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
+      # React majors are covered by the library's CI matrix; bump deliberately.
+      - dependency-name: react
+        update-types: [version-update:semver-major]
+      - dependency-name: react-dom
+        update-types: [version-update:semver-major]
+      - dependency-name: '@types/react'
+        update-types: [version-update:semver-major]
+      - dependency-name: '@types/react-dom'
+        update-types: [version-update:semver-major]
 
   # Workflow actions (Dependabot also updates SHA pins and their "# vX.Y.Z" comments).
   - package-ecosystem: github-actions
