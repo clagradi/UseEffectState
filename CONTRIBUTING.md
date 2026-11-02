@@ -42,33 +42,43 @@ npm install # restore React 19
 
 ## Releasing
 
-1. Add a `## [x.y.z] - YYYY-MM-DD` section to `CHANGELOG.md` (it becomes the GitHub release notes)
-   and commit it: `npm version` needs a clean working tree.
-2. Bump the version; this commits `package.json` / `package-lock.json` and creates the `vx.y.z` tag:
+1. In a pull request, bump `version` in `package.json` (`npm version minor --no-git-tag-version`,
+   or `patch` / `major` / `prerelease --preid rc`) and add a `## [x.y.z] - YYYY-MM-DD` section to
+   `CHANGELOG.md` (it becomes the GitHub release notes). Merge it into `main`.
+2. Tag the merge commit on `main` and push the tag:
 
    ```bash
-   npm version minor   # or patch / major / prerelease --preid rc
+   git fetch origin main
+   git tag v0.2.0 origin/main
+   git push origin v0.2.0
    ```
 
-3. Push the commit and the tag:
+3. The `Publish package` workflow (`.github/workflows/publish.yml`) then:
+   - checks that the tag points at a commit on `main` and matches `package.json`,
+   - runs `npm run check` and the consumer smoke test, and packs the tarball,
+   - publishes that exact tarball to npm from a separate job that only runs npm (trusted
+     publishing with provenance; prereleases go to the `next` dist-tag),
+   - creates the GitHub release with the CHANGELOG section as notes.
 
-   ```bash
-   git push origin main --follow-tags
-   ```
+   Every job is safe to re-run: if one fails, fix the cause and use **Re-run failed jobs** on the
+   run page. Publishing is skipped when the version is already on npm, and the release when it
+   already exists.
 
-4. The `Publish package` workflow (`.github/workflows/publish.yml`) checks that the tag matches
-   `package.json`, runs `npm run check` and the consumer smoke test, publishes to npm with
-   provenance (prereleases under the `next` dist-tag), and creates the GitHub release. If a step
-   fails, fix the cause and re-run it from **Actions → Publish package → Run workflow** with the
-   tag selected: publishing and release creation are skipped when already done.
+### One-time npm setup (trusted publishing)
 
-### One-time npm setup
+The workflow authenticates with **npm trusted publishing** (OIDC): no npm token is stored in
+GitHub, and npm generates provenance automatically.
 
-The workflow authenticates with **npm trusted publishing** (OIDC), so no long-lived token is needed:
+1. On npmjs.com open `@clagradi/effect-runtime`, then **Settings → Trusted publishing → GitHub
+   Actions**: organization or user `clagradi`, repository `UseEffectState`, workflow filename
+   `publish.yml`, environment empty.
+2. Tick **npm publish** under allowed actions (configurations created after September 2026 only
+   allow staged publishing unless you opt in).
+3. Push the release tag within 48 hours: npm deletes a new configuration that has not been used
+   for a successful publish by then.
 
-1. On npmjs.com open the package, then **Settings → Trusted publishing → GitHub Actions**.
-2. Organization or user: `clagradi`, repository: `UseEffectState`, workflow filename: `publish.yml`
-   (leave the environment empty).
+After the first successful publish, consider **Settings → Publishing access → Require two-factor
+authentication and disallow tokens**.
 
-Alternatively, store an npm granular access token with publish rights as the `NPM_TOKEN`
-repository secret; the workflow uses it when trusted publishing is not configured.
+Optional: set the repository variable `NPM_STAGED_PUBLISH` to `true` to stage releases instead;
+approve them on npmjs.com (Staged Packages) or with `npm stage approve <id>`.

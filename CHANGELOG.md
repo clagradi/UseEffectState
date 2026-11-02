@@ -63,9 +63,12 @@ Node ESM consumers.
 - `useEvent` throws when called during the first render (before its callback is committed), and is
   typed like React's `useEffectEvent` (`T extends Function`): unannotated callback parameters are
   now reported by strict TypeScript instead of silently becoming `any`.
-- CI: Node 22 / 24 / 26 x React 18 / 19, lint (ESLint 10 + React hooks rules), package checks;
-  publishing via npm trusted publishing (OIDC) with provenance, GitHub release notes from this
-  changelog; Dependabot.
+- CI: Node 22 / 24 / 26 x React 18 / 19, lint (ESLint 10 + React hooks rules), package checks,
+  consumer smoke test and a publish dry run of the packed tarball.
+- Releases: a tag-triggered workflow verifies the tag (on `main`, matches `package.json`), packs
+  the tarball, publishes it from a job that only runs npm (trusted publishing over OIDC, with
+  provenance and no stored tokens) and creates the GitHub release from this changelog. Every job
+  can be re-run. Dependabot with cooldowns for npm and GitHub Actions.
 - Tooling: TypeScript 6, Vitest 5, tsup 9, jsdom 30, Vite 8 for the playground.
 
 ### Deprecated

@@ -405,7 +405,8 @@ return a promise do not trigger it, for example
   (like errors thrown in a plain effect), otherwise `console.error`. 0.1 tried to log only outside
   production, but bundlers never replaced that check.
 - `useEvent` callbacks throw if called during the first render (they would run with uncommitted
-  values); call them from effects or event handlers.
+  values); call them from effects or event handlers. `useEvent` is now typed like React's
+  `useEffectEvent`: annotate callback parameters (strict TypeScript no longer lets them be `any`).
 - `layout: true` is deprecated in favour of `useLayoutEffectTask`, and is read once on mount.
 - The package is now `"type": "module"` with correct dual ESM/CommonJS exports and types. If you
   deep-imported files from `dist/`, import from the package root instead.

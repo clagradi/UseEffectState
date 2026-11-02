@@ -1,19 +1,35 @@
 version: 2
 updates:
+  # The library. It has no runtime dependencies (react is a peer dependency, which
+  # Dependabot never edits), so updates only touch devDependencies and the lockfile.
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: monthly
+    # Keep package.json equal to what CI tested (the default widens ranges for libraries).
+    versioning-strategy: increase
     open-pull-requests-limit: 5
+    # Wait before proposing fresh releases (supply-chain safety); security updates ignore this.
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+    commit-message:
+      prefix: chore
+      include: scope
     groups:
       dev-dependencies:
         dependency-type: development
         update-types: [minor, patch]
+        exclude-patterns:
+          - typescript # TypeScript minors can break; review them alone
+      security:
+        applies-to: security-updates
+        patterns: ['*']
     ignore:
-      # TypeScript 7 (native) is not supported by typescript-eslint yet; bump deliberately.
+      # TypeScript 7 (native compiler) is not supported by typescript-eslint yet; bump deliberately.
       - dependency-name: typescript
         update-types: [version-update:semver-major]
-      # React majors are tested via the CI matrix; bump deliberately.
+      # React majors are covered by the CI matrix; bump deliberately.
       - dependency-name: react
         update-types: [version-update:semver-major]
       - dependency-name: react-dom
@@ -23,20 +39,30 @@ updates:
       - dependency-name: '@types/react-dom'
         update-types: [version-update:semver-major]
 
+  # The example app (not published).
   - package-ecosystem: npm
     directory: /examples/vite-react
     schedule:
       interval: monthly
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 2
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore(example)
     groups:
       example:
         patterns: ['*']
         update-types: [minor, patch]
 
+  # Workflow actions (Dependabot also updates SHA pins and their "# vX.Y.Z" comments).
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci
     groups:
-      actions:
+      github-actions:
         patterns: ['*']
